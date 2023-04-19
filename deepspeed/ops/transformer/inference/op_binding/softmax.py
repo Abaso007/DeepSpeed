@@ -23,6 +23,16 @@ class SoftmaxOp(BaseOp):
     def forward(self, attn_scores: torch.Tensor, attn_mask: torch.Tensor, alibi: torch.Tensor, triangular: bool,
                 recompute: bool, local_attention: bool, window_size: int, async_op: bool, layer_scale: float,
                 head_offset: int):
-        output = self.softmax_func(attn_scores, attn_mask, alibi, triangular, recompute, local_attention, window_size,
-                                   async_op, layer_scale, head_offset, self.config.mp_size)
-        return output
+        return self.softmax_func(
+            attn_scores,
+            attn_mask,
+            alibi,
+            triangular,
+            recompute,
+            local_attention,
+            window_size,
+            async_op,
+            layer_scale,
+            head_offset,
+            self.config.mp_size,
+        )

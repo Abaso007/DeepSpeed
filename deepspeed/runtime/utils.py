@@ -44,8 +44,7 @@ class DummyOptim():
     """
 
     def __init__(self, params):
-        self.param_groups = []
-        self.param_groups.append({'params': params})
+        self.param_groups = [{'params': params}]
 
 
 def noop_decorator(func):
@@ -79,10 +78,7 @@ def is_model_parallel_parameter(p) -> bool:
     if hasattr(p, 'model_parallel') and p.model_parallel:
         return True
 
-    if hasattr(p, 'tensor_model_parallel') and p.tensor_model_parallel:
-        return True
-
-    return False
+    return bool(hasattr(p, 'tensor_model_parallel') and p.tensor_model_parallel)
 
 
 def bwc_tensor_model_parallel_rank(mpu=None):
@@ -140,7 +136,7 @@ def copy_to_device(item, device, criterion_func):
     elif isinstance(item, list):
         return [copy_to_device(v, device, criterion_func) for v in item]
     elif isinstance(item, tuple):
-        return tuple([copy_to_device(v, device, criterion_func) for v in item])
+        return tuple(copy_to_device(v, device, criterion_func) for v in item)
     elif isinstance(item, dict):
         return {k: copy_to_device(v, device, criterion_func) for k, v in item.items()}
     else:
@@ -166,7 +162,7 @@ def move_to_device(item, device, criterion_func):
     elif isinstance(item, list):
         return [move_to_device(v, device, criterion_func) for v in item]
     elif isinstance(item, tuple):
-        return tuple([move_to_device(v, device, criterion_func) for v in item])
+        return tuple(move_to_device(v, device, criterion_func) for v in item)
     elif isinstance(item, dict):
         return {k: move_to_device(v, device, criterion_func) for k, v in item.items()}
     else:
@@ -228,10 +224,10 @@ class CheckOverflow(object):
 
     # `params` is a list / generator of torch.Variable
     def has_overflow_serial(self, params):
-        for i, p in enumerate(params):
-            if p.grad is not None and self._has_inf_or_nan(p.grad.data, i):
-                return True
-        return False
+        return any(
+            p.grad is not None and self._has_inf_or_nan(p.grad.data, i)
+            for i, p in enumerate(params)
+        )
 
     def has_overflow(self, params, has_moe_params=None):
         if has_moe_params is None:
@@ -280,20 +276,25 @@ class CheckOverflow(object):
                 raise
             return True
         else:
-            if cpu_sum == float('inf') or cpu_sum == -float('inf') or cpu_sum != cpu_sum:
-                return True
-            return False
+            return (
+                cpu_sum == float('inf')
+                or cpu_sum == -float('inf')
+                or cpu_sum != cpu_sum
+            )
 
 
 def _handle_overflow(cpu_sum, x, i):
     import math
     rank = dist.get_rank()
     if rank == 0:
-        t_i = -1
-        for v_i, v in enumerate(x.data.contiguous().view(-1)):
-            if not math.isfinite(float(v)):
-                t_i = v_i
-                break
+        t_i = next(
+            (
+                v_i
+                for v_i, v in enumerate(x.data.contiguous().view(-1))
+                if not math.isfinite(float(v))
+            ),
+            -1,
+        )
         logger.info(f"rank {rank} detected overflow {cpu_sum} in tensor {i}:{t_i} shape {x.shape}")
 
 
@@ -343,14 +344,13 @@ def clip_grad_norm_(parameters, max_norm, norm_type=2, mpu=None):
     else:
         total_norm = 0
         for p in parameters:
-            if mpu is not None:
-                if (mpu.get_model_parallel_rank() == 0) or is_model_parallel_parameter(p):
-                    param_norm = p.grad.data.norm(norm_type)
-                    total_norm += param_norm.item()**norm_type
-            else:
+            if mpu is None:
                 param_norm = p.grad.data.float().norm(norm_type)
                 total_norm += param_norm.item()**norm_type
 
+            elif (mpu.get_model_parallel_rank() == 0) or is_model_parallel_parameter(p):
+                param_norm = p.grad.data.norm(norm_type)
+                total_norm += param_norm.item()**norm_type
         # Sum across all model parallel GPUs.
         total_norm_cuda = get_accelerator().FloatTensor([float(total_norm)])
         if mpu is not None:
@@ -532,7 +532,7 @@ def prefix_sum_inc(weights):
         >>> prefix_sum_inc([3,4,5])
         [3, 7, 12]
     """
-    weights_ = [w for w in weights]
+    weights_ = list(weights)
     for x in range(1, len(weights_)):
         weights_[x] += weights_[x - 1]
     return weights_
@@ -700,11 +700,9 @@ class PartitionedTensor:
         Returns:
             torch.LongTensor: a tensor encoding the meta-information for the partitioning
         """
-        meta = []
-        meta.append(len(self.orig_size))
+        meta = [len(self.orig_size)]
         meta += list(self.orig_size)
-        meta.append(self.num_parts)
-        meta.append(self.rank)
+        meta.extend((self.num_parts, self.rank))
         meta += self.partition
         return torch.LongTensor(data=meta).to(self.orig_device)
 
@@ -762,7 +760,7 @@ def memory_status(msg, print_rank=-1, reset_max=False):
 
 
 def get_ma_status():
-    if dist.is_initialized() and not dist.get_rank() == 0:
+    if dist.is_initialized() and dist.get_rank() != 0:
         return 0
     return get_accelerator().memory_allocated()
 
@@ -775,7 +773,7 @@ def empty_cache():
 def see_memory_usage(message, force=False):
     if not force:
         return
-    if dist.is_initialized() and not dist.get_rank() == 0:
+    if dist.is_initialized() and dist.get_rank() != 0:
         return
 
     # python doesn't do real-time garbage collection so do it explicitly to get the correct RAM reports
@@ -862,7 +860,9 @@ def get_global_norm_of_tensors(input_tensors, norm_type=2, mpu=None):
     """
 
     assert isinstance(input_tensors, Iterable), f'expected Iterable type not {type(input_tensors)}'
-    assert all([torch.is_tensor(t) for t in input_tensors]), f'expected list of only tensors'
+    assert all(
+        torch.is_tensor(t) for t in input_tensors
+    ), 'expected list of only tensors'
 
     norm_type = float(norm_type)
     if norm_type == inf:
@@ -872,7 +872,10 @@ def get_global_norm_of_tensors(input_tensors, norm_type=2, mpu=None):
             dist.all_reduce(total_norm_cuda, op=dist.ReduceOp.MAX, group=mpu.get_model_parallel_group())
             total_norm = total_norm_cuda[0].item()
     else:
-        total_norm = sum([t.data.float().norm(norm_type).item()**norm_type for t in input_tensors])
+        total_norm = sum(
+            t.data.float().norm(norm_type).item() ** norm_type
+            for t in input_tensors
+        )
         total_norm_cuda = get_accelerator().FloatTensor([float(total_norm)])
         if mpu is not None:
             dist.all_reduce(total_norm_cuda, op=dist.ReduceOp.SUM, group=mpu.get_model_parallel_group())
@@ -908,16 +911,12 @@ def clip_tensors_by_global_norm(input_tensors, max_norm=1.0, global_norm=None, m
 
 def align_dense_tensors(tensor_list, alignment):
     num_elements = sum(t.numel() for t in tensor_list)
-    remaining = num_elements % alignment
-
-    if remaining:
+    if remaining := num_elements % alignment:
         elements_to_add = alignment - remaining
         pad_tensor = torch.zeros(elements_to_add, device=tensor_list[0].device, dtype=tensor_list[0].dtype)
-        padded_tensor_list = tensor_list + [pad_tensor]
+        return tensor_list + [pad_tensor]
     else:
-        padded_tensor_list = tensor_list
-
-    return padded_tensor_list
+        return tensor_list
 
 
 def all_gather_dp_groups(partitioned_param_groups, dp_process_group, start_alignment_factor, allgather_bucket_size):

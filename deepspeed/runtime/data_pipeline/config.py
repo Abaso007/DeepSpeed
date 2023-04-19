@@ -12,8 +12,7 @@ from ..config_utils import get_scalar_param
 # One challenge is that we still need to somehow include the default values,
 # for example the *_ENABLED has default of false.
 def get_data_efficiency_config(param_dict):
-    output = {}
-    output[DATA_EFFICIENCY_ENABLED] = get_data_efficiency_enabled(param_dict)
+    output = {DATA_EFFICIENCY_ENABLED: get_data_efficiency_enabled(param_dict)}
     output[DATA_EFFICIENCY_SEED] = get_data_efficiency_seed(param_dict)
     if DATA_EFFICIENCY not in param_dict.keys():
         param_dict[DATA_EFFICIENCY] = {}
@@ -39,8 +38,7 @@ def get_data_efficiency_seed(param_dict):
 
 
 def get_data_sampling(param_dict):
-    output = {}
-    output[DATA_SAMPLING_ENABLED] = get_data_sampling_enabled(param_dict)
+    output = {DATA_SAMPLING_ENABLED: get_data_sampling_enabled(param_dict)}
     output[DATA_SAMPLING_NUM_EPOCHS] = get_data_sampling_num_epochs(param_dict)
     output[DATA_SAMPLING_NUM_WORKERS] = get_data_sampling_num_workers(param_dict)
     if DATA_SAMPLING not in param_dict.keys():
@@ -74,8 +72,11 @@ def get_data_sampling_num_workers(param_dict):
 
 
 def get_curriculum_learning(param_dict):
-    output = {}
-    output[CURRICULUM_LEARNING_ENABLED] = get_curriculum_learning_enabled(param_dict)
+    output = {
+        CURRICULUM_LEARNING_ENABLED: get_curriculum_learning_enabled(
+            param_dict
+        )
+    }
     if CURRICULUM_LEARNING not in param_dict.keys():
         param_dict[CURRICULUM_LEARNING] = {}
     sub_param_dict = param_dict[CURRICULUM_LEARNING]
@@ -96,12 +97,11 @@ def get_curriculum_learning_enabled(param_dict):
 
 
 def get_curriculum_learning_params(param_dict):
-    if CURRICULUM_LEARNING in param_dict.keys():
-        curriculum_learning_params = copy.copy(param_dict[CURRICULUM_LEARNING])
-        curriculum_learning_params.pop(CURRICULUM_LEARNING_ENABLED)
-        return curriculum_learning_params
-    else:
+    if CURRICULUM_LEARNING not in param_dict.keys():
         return {}
+    curriculum_learning_params = copy.copy(param_dict[CURRICULUM_LEARNING])
+    curriculum_learning_params.pop(CURRICULUM_LEARNING_ENABLED)
+    return curriculum_learning_params
 
 
 def get_curriculum_enabled_legacy(param_dict):
@@ -113,17 +113,15 @@ def get_curriculum_enabled_legacy(param_dict):
 
 
 def get_curriculum_params_legacy(param_dict):
-    if CURRICULUM_LEARNING_LEGACY in param_dict.keys():
-        curriculum_params = copy.copy(param_dict[CURRICULUM_LEARNING_LEGACY])
-        curriculum_params.pop(CURRICULUM_ENABLED_LEGACY)
-        return curriculum_params
-    else:
+    if CURRICULUM_LEARNING_LEGACY not in param_dict.keys():
         return False
+    curriculum_params = copy.copy(param_dict[CURRICULUM_LEARNING_LEGACY])
+    curriculum_params.pop(CURRICULUM_ENABLED_LEGACY)
+    return curriculum_params
 
 
 def get_data_routing(param_dict):
-    output = {}
-    output[DATA_ROUTING_ENABLED] = get_data_routing_enabled(param_dict)
+    output = {DATA_ROUTING_ENABLED: get_data_routing_enabled(param_dict)}
     if DATA_ROUTING not in param_dict.keys():
         param_dict[DATA_ROUTING] = {}
     sub_param_dict = param_dict[DATA_ROUTING]
@@ -140,9 +138,10 @@ def get_data_routing_enabled(param_dict):
 
 
 def get_random_ltd(param_dict):
-    output = {}
-    output[RANDOM_LTD_ENABLED] = RANDOM_LTD_ENABLED_DEFAULT
-    output[RANDOM_LTD_LAYER_TOKEN_LR_SCHEDULE] = {}
+    output = {
+        RANDOM_LTD_ENABLED: RANDOM_LTD_ENABLED_DEFAULT,
+        RANDOM_LTD_LAYER_TOKEN_LR_SCHEDULE: {},
+    }
     output[RANDOM_LTD_LAYER_TOKEN_LR_SCHEDULE][
         RANDOM_LTD_LAYER_TOKEN_LR_ENABLED] = RANDOM_LTD_LAYER_TOKEN_LR_ENABLED_DEFAULT
     if get_random_ltd_enabled(param_dict):
@@ -160,9 +159,8 @@ def get_random_ltd_enabled(param_dict):
 
 
 def get_random_ltd_params(param_dict):
-    if RANDOM_LTD in param_dict.keys():
-        random_ltd_params = copy.copy(param_dict[RANDOM_LTD])
-        random_ltd_params.pop(RANDOM_LTD_ENABLED)
-        return random_ltd_params
-    else:
+    if RANDOM_LTD not in param_dict.keys():
         return {}
+    random_ltd_params = copy.copy(param_dict[RANDOM_LTD])
+    random_ltd_params.pop(RANDOM_LTD_ENABLED)
+    return random_ltd_params

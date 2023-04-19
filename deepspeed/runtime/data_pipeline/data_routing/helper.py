@@ -9,11 +9,7 @@ from deepspeed.compression.helper import recursive_getattr, recursive_setattr
 
 
 def convert_to_random_ltd(model, convert_type):
-    if hasattr(model, 'module'):
-        c_model = model.module
-    else:
-        c_model = model
-
+    c_model = model.module if hasattr(model, 'module') else model
     for name, module in c_model.named_modules():
 
         if isinstance(module, convert_type):
@@ -26,11 +22,7 @@ def convert_to_random_ltd(model, convert_type):
 
 
 def save_without_random_ltd(model):
-    if hasattr(model, 'module'):
-        c_model = model.module
-    else:
-        c_model = model
-
+    c_model = model.module if hasattr(model, 'module') else model
     model_dic = c_model.state_dict()
     return remove_random_ltd_state_dict(model_dic)
 

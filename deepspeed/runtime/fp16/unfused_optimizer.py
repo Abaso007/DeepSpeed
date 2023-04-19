@@ -74,7 +74,6 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
         # we may have a way of fusing dynamic scale. Do not support for now
         if dynamic_loss_scale:
             self.dynamic_loss_scale = True
-            self.cur_iter = 0
             self.last_overflow_iter = -1
             self.scale_factor = 2.0
             if dynamic_loss_args is None:
@@ -87,9 +86,9 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
                 self.min_loss_scale = dynamic_loss_args[MIN_LOSS_SCALE]
         else:
             self.dynamic_loss_scale = False
-            self.cur_iter = 0
             self.cur_scale = static_loss_scale
 
+        self.cur_iter = 0
         self.custom_loss_scaler = False
         self.external_loss_scale = None
 
@@ -122,10 +121,9 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
             for p in group:
                 if set_to_none:
                     p.grad = None
-                else:
-                    if p.grad is not None:
-                        p.grad.detach_()
-                        p.grad.zero_()
+                elif p.grad is not None:
+                    p.grad.detach_()
+                    p.grad.zero_()
 
     def step_fused_lamb(self, closure=None):
         """
@@ -158,8 +156,9 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
         self._update_scale(self.overflow)
         if self.overflow:
             if self.verbose:
-                logger.info("[deepspeed] fp16 dynamic loss scale overflow! Skipping step. Attempted loss "
-                            "scale: {}, reducing to {}".format(prev_scale, self.cur_scale))
+                logger.info(
+                    f"[deepspeed] fp16 dynamic loss scale overflow! Skipping step. Attempted loss scale: {prev_scale}, reducing to {self.cur_scale}"
+                )
             return self.overflow
 
         self._global_grad_norm = get_global_norm(norm_list=norm_groups)
@@ -167,8 +166,7 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
         self.optimizer.step(grads=grads_groups, output_params=self.fp16_groups, scale=combined_scale)
 
         for fp32_group, fp16_group in zip(self.fp32_groups, self.fp16_groups):
-            for idx, (fp32_param, fp16_param) in enumerate(zip(fp32_group, fp16_group)):
-
+            for fp32_param, fp16_param in zip(fp32_group, fp16_group):
                 #remove the fp32 grad
                 fp32_param.grad = None
 
@@ -206,8 +204,9 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
         self._update_scale(self.overflow)
         if self.overflow:
             if self.verbose:
-                logger.info("[deepspeed] fp16 dynamic loss scale overflow! Skipping step. Attempted loss "
-                            "scale: {}, reducing to {}".format(prev_scale, self.cur_scale))
+                logger.info(
+                    f"[deepspeed] fp16 dynamic loss scale overflow! Skipping step. Attempted loss scale: {prev_scale}, reducing to {self.cur_scale}"
+                )
             return self.overflow
 
         norm_groups = []
@@ -231,8 +230,7 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
         self.optimizer.step()
 
         for fp32_group, fp16_group in zip(self.fp32_groups, self.fp16_groups):
-            for idx, (fp32_param, fp16_param) in enumerate(zip(fp32_group, fp16_group)):
-
+            for fp32_param, fp16_param in zip(fp32_group, fp16_group):
                 #remove the fp32 grad
                 fp32_param.grad = None
 
@@ -290,10 +288,9 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
                     if self.verbose:
                         logger.info(f"No Grad overflow for {self.scale_window} iterations")
                         logger.info(f"Increasing dynamic loss scale from {prev_scale} to {self.cur_scale}")
-        else:
-            if skip:
-                logger.info("Grad overflow on iteration %s", self.cur_iter)
-                logger.info("Using static loss scale of %s", self.cur_scale)
+        elif skip:
+            logger.info("Grad overflow on iteration %s", self.cur_iter)
+            logger.info("Using static loss scale of %s", self.cur_scale)
         self.cur_iter += 1
         return
 
@@ -318,10 +315,7 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
 
     # Promote loss scale so it can be retrieved or set via "fp16_optimizer_instance.loss_scale"
     def _get_loss_scale(self):
-        if self.custom_loss_scaler:
-            return self.external_loss_scale
-        else:
-            return self.cur_scale
+        return self.external_loss_scale if self.custom_loss_scaler else self.cur_scale
 
     def _set_loss_scale(self, value):
         self.loss_scaler.cur_scale = value
@@ -339,10 +333,11 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
             checkpoint['optimizer'] = optimizer.state_dict()
             torch.save(checkpoint, "saved.pth")
         """
-        state_dict = {}
-        state_dict['dynamic_loss_scale'] = self.dynamic_loss_scale
-        state_dict['cur_scale'] = self.cur_scale
-        state_dict['cur_iter'] = self.cur_iter
+        state_dict = {
+            'dynamic_loss_scale': self.dynamic_loss_scale,
+            'cur_scale': self.cur_scale,
+            'cur_iter': self.cur_iter,
+        }
         if state_dict['dynamic_loss_scale']:
             state_dict['last_overflow_iter'] = self.last_overflow_iter
             state_dict['scale_factor'] = self.scale_factor
@@ -406,13 +401,13 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
         return repr(self.optimizer)
 
     def initialize_optimizer_states(self):
-        for i, group in enumerate(self.fp16_groups):
+        for group in self.fp16_groups:
             for param in group:
                 param.grad = torch.zeros(param.size(),
                                          dtype=param.dtype,
                                          device=get_accelerator().current_device_name())
 
-        for i, group in enumerate(self.fp32_groups):
+        for group in self.fp32_groups:
             for param in group:
                 param.grad = torch.zeros(param.size(),
                                          dtype=param.dtype,
@@ -420,10 +415,10 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
 
         self.optimizer.step()
 
-        for i, group in enumerate(self.fp16_groups):
+        for group in self.fp16_groups:
             for param in group:
                 param.grad = None
 
-        for i, group in enumerate(self.fp32_groups):
+        for group in self.fp32_groups:
             for param in group:
                 param.grad = None

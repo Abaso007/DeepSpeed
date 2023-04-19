@@ -28,10 +28,7 @@ from .utils import policy_to_ds_container
 class ReplaceWithTensorSlicing:
 
     def __init__(self, mp_group=None, mp_size=1, out_dim=1, in_dim=0):
-        if mp_group is not None:
-            self.gpu_index = dist.get_rank(group=mp_group)
-        else:
-            self.gpu_index = 0
+        self.gpu_index = dist.get_rank(group=mp_group) if mp_group is not None else 0
         self.out_dim = out_dim
         self.in_dim = in_dim
         self.mp_size = mp_size
@@ -93,28 +90,26 @@ class ReplaceWithTensorSlicing:
         assert not dst.data.is_meta  # the torch.Tensor.copy_ method used below will silently fail on meta tensors
         if allocat_tensor:
             dst = torch.empty_like(dst)
-        outer_dim = 0 if int8 else 1
-        inner_dim = 1 if int8 else 0
         src_shape = src.shape
         dst_shape = dst.shape
         if (len(src_shape) == 2 and len(dst_shape) == 2):
 
+            outer_dim = 0 if int8 else 1
+            inner_dim = 1 if int8 else 0
             if src_shape[inner_dim] == dst_shape[self.in_dim] and src_shape[outer_dim] == dst_shape[self.out_dim]:
                 dst = dst.reshape(-1).data.copy_(src.data.reshape(-1)).reshape(src.shape)
-            else:
-                if src_shape[inner_dim] != dst_shape[self.in_dim]:
-                    self.merge_assert(src_shape[inner_dim], dst_shape[self.in_dim])
-                    dst.data.copy_(src[:, self.gpu_index * dst_shape[self.in_dim]: (self.gpu_index + 1) * dst_shape[self.in_dim]] if inner_dim == 1 else \
-                                   src[self.gpu_index * dst_shape[self.in_dim]: (self.gpu_index + 1) * dst_shape[self.in_dim], :])
-                else:
-                    self.merge_assert(src_shape[outer_dim], dst_shape[self.out_dim])
-                    dst.data.copy_(src[:, self.gpu_index * dst_shape[self.out_dim]: (self.gpu_index + 1) * dst_shape[self.out_dim]] if outer_dim == 1 else \
+            elif src_shape[inner_dim] == dst_shape[self.in_dim]:
+                self.merge_assert(src_shape[outer_dim], dst_shape[self.out_dim])
+                dst.data.copy_(src[:, self.gpu_index * dst_shape[self.out_dim]: (self.gpu_index + 1) * dst_shape[self.out_dim]] if outer_dim == 1 else \
                                    src[self.gpu_index * dst_shape[self.out_dim]: (self.gpu_index + 1) * dst_shape[self.out_dim], :])
-        else:
-            if src_shape[0] == dst_shape[0]:
-                dst = src
             else:
-                dst.data.copy_(src[self.gpu_index * dst_shape[-1]:(self.gpu_index + 1) * dst_shape[-1]])
+                self.merge_assert(src_shape[inner_dim], dst_shape[self.in_dim])
+                dst.data.copy_(src[:, self.gpu_index * dst_shape[self.in_dim]: (self.gpu_index + 1) * dst_shape[self.in_dim]] if inner_dim == 1 else \
+                                   src[self.gpu_index * dst_shape[self.in_dim]: (self.gpu_index + 1) * dst_shape[self.in_dim], :])
+        elif src_shape[0] == dst_shape[0]:
+            dst = src
+        else:
+            dst.data.copy_(src[self.gpu_index * dst_shape[-1]:(self.gpu_index + 1) * dst_shape[-1]])
         dst = torch.nn.parameter.Parameter(dst, requires_grad=False)
         if hasattr(src, 'scale'):
             dst.scale = src.scale
@@ -128,7 +123,7 @@ def get_transformer_name(replaced_module):
     transformer_name = ''
     for n, c in replaced_module.named_children():
         if c.__class__ in supported_models:
-            transformer_name += n + '.'
+            transformer_name += f'{n}.'
             for name, child in c.named_children():
                 if child.__class__ is ModuleList:
                     transformer_name += name
@@ -225,9 +220,7 @@ def generic_injection(module, fp16=False, enable_cuda_graph=True):
         config = Diffusers2DTransformerConfig()
         return DeepSpeedDiffusersTransformerBlock(child, config)
 
-    if isinstance(module, torch.nn.Module):
-        pass
-    else:
+    if not isinstance(module, torch.nn.Module):
         if fp16 is False:
             raise ValueError("Generic injection only supported with FP16")
 
@@ -286,7 +279,7 @@ def replace_transformer_layer(orig_layer_impl, model, checkpoint_dict, config, m
         Updated nn.module with replaced transformer layers
     """
     # defining globals as internally defined functions inherit these everywhere
-    fp16 = (config.dtype == torch.float16 or config.dtype == torch.int8)
+    fp16 = config.dtype in [torch.float16, torch.int8]
     quantize = (config.dtype == torch.int8)
     # todo: Refactor later. In future, let's minimize the style used above and use config.** instead
 
@@ -449,7 +442,7 @@ def replace_transformer_layer(orig_layer_impl, model, checkpoint_dict, config, m
         if linear_layer_setting is not None:
             linear_policies = {linear_layer_setting[0]: _replace}
             if len(linear_layer_setting) == 2:
-                linear_policies.update({linear_layer_setting[1]: _slice_embedding})
+                linear_policies[linear_layer_setting[1]] = _slice_embedding
         else:
             if orig_layer_impl is HFGPT2LayerPolicy._orig_layer_class:
                 try:
@@ -464,8 +457,13 @@ def replace_transformer_layer(orig_layer_impl, model, checkpoint_dict, config, m
         def _replace_module(r_module, prev_name=''):
             for name, child in r_module.named_children():
                 if child.__class__ in linear_policies:
-                    setattr(r_module, name, linear_policies[child.__class__](child, prev_name + '.' + name,
-                                                                             conv_linear_layer))
+                    setattr(
+                        r_module,
+                        name,
+                        linear_policies[child.__class__](
+                            child, f'{prev_name}.{name}', conv_linear_layer
+                        ),
+                    )
                 else:
                     update_mp_params(child)
                     _replace_module(child, name)
@@ -589,7 +587,7 @@ def replace_transformer_layer(orig_layer_impl, model, checkpoint_dict, config, m
         if dist.is_initialized():
             dist.barrier()
         transformer_name = get_transformer_name(replaced_module)
-        non_tp_ckpt_name = f'non-tp.pt'
+        non_tp_ckpt_name = 'non-tp.pt'
         ckpt_files = [non_tp_ckpt_name]
         os.makedirs(config.save_mp_checkpoint_path, exist_ok=True)
 
@@ -711,16 +709,16 @@ def replace_module(model, orig_class, replace_fn, _replace_policy):
     """
     policy = {}
     if orig_class is not None:
-        policy.update({orig_class: (replace_fn, _replace_policy)})
+        policy[orig_class] = (replace_fn, _replace_policy)
     else:
         for plcy in replace_policies:
             # instantiate a throw-away policy in order to populate the _orig_layer_class
             _ = plcy(None)
             if isinstance(plcy._orig_layer_class, list):
                 for orig_layer_class in plcy._orig_layer_class:
-                    policy.update({orig_layer_class: (replace_fn, plcy)})
+                    policy[orig_layer_class] = (replace_fn, plcy)
             elif plcy._orig_layer_class is not None:
-                policy.update({plcy._orig_layer_class: (replace_fn, plcy)})
+                policy[plcy._orig_layer_class] = (replace_fn, plcy)
     assert len(policy.items()) > 0,\
         "No default policy found! Please specify your policy injection_policy (like {BertLayer:HFBEertLayerPolicy})." +\
         "You can find some samples here: https://github.com/microsoft/DeepSpeed/blob/master/deepspeed/module_inject/replace_policy.py"

@@ -67,47 +67,47 @@ class RandomLayerTokenDrop(Module):
         if self.random_ltd_scheduler is not None:
             self.reserved_length = self.random_ltd_scheduler.get_current_seq()
             self.get_hidden_tensor_shape(hidden_states)
-        if self.training and self.random_ltd_scheduler is not None and self.reserved_length < self.curr_seq:
-            if self.mask_name is not None:
-                mask = kwargs[self.mask_name]
-            else:
-                mask = None
-            if self.random_ltd_layer_id == 0:
-                sampled_indices, part_attention_mask = self.index_generator(self.reserved_length,\
+        if (
+            not self.training
+            or self.random_ltd_scheduler is None
+            or self.reserved_length >= self.curr_seq
+        ):
+            return self.random_ltd_layer(hidden_states, **kwargs)
+        mask = kwargs[self.mask_name] if self.mask_name is not None else None
+        if self.random_ltd_layer_id == 0:
+            sampled_indices, part_attention_mask = self.index_generator(self.reserved_length,\
                                                                                       self.curr_seq, \
                                                                                       self.curr_micro_batch, \
                                                                                       self.random_ltd_num_layer, \
                                                                                       hidden_states.device, mask)
-                self.random_ltd_scheduler.state[RANDOM_LTD_SAMPLE_INDEX] = sampled_indices
-                self.random_ltd_scheduler.state[RANDOM_LTD_ATTENTION_MASK] = part_attention_mask
-            else:
-                sampled_indices = self.random_ltd_scheduler.state[RANDOM_LTD_SAMPLE_INDEX]
-                part_attention_mask = self.random_ltd_scheduler.state[RANDOM_LTD_ATTENTION_MASK]
-
-            hidden_states, part_hidden_states = GatherTokens.apply(hidden_states,
-                                                                   sampled_indices[self.random_ltd_layer_id, :, :],
-                                                                   self.batch_first)
-            if self.mask_name is not None:
-                if self.model_type == 'encoder':
-                    kwargs[self.mask_name] = part_attention_mask[self.random_ltd_layer_id]
-                else:
-                    kwargs[self.mask_name] = part_attention_mask
-
-            outputs = self.random_ltd_layer(part_hidden_states, **kwargs)
-
-            if isinstance(outputs, tuple):
-                hidden_states = ScatterTokens.apply(hidden_states, outputs[0],
-                                                    sampled_indices[self.random_ltd_layer_id, :, :], self.batch_first)
-                my_list = list(outputs)
-                my_list[0] = hidden_states
-                return tuple(my_list)
-            elif isinstance(outputs, Tensor):
-                hidden_states = ScatterTokens.apply(hidden_states, outputs,
-                                                    sampled_indices[self.random_ltd_layer_id, :, :], self.batch_first)
-                return hidden_states
-            else:
-                logger.warning("************For now, we only support tuple and tensor output.  \
-                       You need to adjust the output according to the layer in your model************")
-                raise NotImplementedError
+            self.random_ltd_scheduler.state[RANDOM_LTD_SAMPLE_INDEX] = sampled_indices
+            self.random_ltd_scheduler.state[RANDOM_LTD_ATTENTION_MASK] = part_attention_mask
         else:
-            return self.random_ltd_layer(hidden_states, **kwargs)
+            sampled_indices = self.random_ltd_scheduler.state[RANDOM_LTD_SAMPLE_INDEX]
+            part_attention_mask = self.random_ltd_scheduler.state[RANDOM_LTD_ATTENTION_MASK]
+
+        hidden_states, part_hidden_states = GatherTokens.apply(hidden_states,
+                                                               sampled_indices[self.random_ltd_layer_id, :, :],
+                                                               self.batch_first)
+        if self.mask_name is not None:
+            kwargs[self.mask_name] = (
+                part_attention_mask[self.random_ltd_layer_id]
+                if self.model_type == 'encoder'
+                else part_attention_mask
+            )
+        outputs = self.random_ltd_layer(part_hidden_states, **kwargs)
+
+        if isinstance(outputs, tuple):
+            hidden_states = ScatterTokens.apply(hidden_states, outputs[0],
+                                                sampled_indices[self.random_ltd_layer_id, :, :], self.batch_first)
+            my_list = list(outputs)
+            my_list[0] = hidden_states
+            return tuple(my_list)
+        elif isinstance(outputs, Tensor):
+            hidden_states = ScatterTokens.apply(hidden_states, outputs,
+                                                sampled_indices[self.random_ltd_layer_id, :, :], self.batch_first)
+            return hidden_states
+        else:
+            logger.warning("************For now, we only support tuple and tensor output.  \
+                       You need to adjust the output according to the layer in your model************")
+            raise NotImplementedError

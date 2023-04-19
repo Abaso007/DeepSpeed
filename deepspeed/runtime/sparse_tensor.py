@@ -58,11 +58,7 @@ class SparseTensor(object):
 
     def __str__(self):
         sparse_size, dense_size = self.sparse_size()
-        return "DeepSpeed.SparseTensor(indices_size={}, values_size={}, " \
-               "dense_size={}, device={}, reduction_factor={})".format(
-            self.indices.size(), self.values.size(), self.dense_size,
-            self.indices.get_device(), dense_size / sparse_size
-        )
+        return f"DeepSpeed.SparseTensor(indices_size={self.indices.size()}, values_size={self.values.size()}, dense_size={self.dense_size}, device={self.indices.get_device()}, reduction_factor={dense_size / sparse_size})"
 
     def __repr__(self):
         return self.__str__()

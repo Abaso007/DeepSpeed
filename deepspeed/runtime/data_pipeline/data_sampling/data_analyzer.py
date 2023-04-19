@@ -304,8 +304,7 @@ class DataAnalyzer(object):
                 # sample_to_metric
                 map_worker_thread = []
                 for w_idx in range(num_workers):
-                    for t_idx in range(num_threads):
-                        map_worker_thread.append([w_idx, t_idx])
+                    map_worker_thread.extend([w_idx, t_idx] for t_idx in range(num_threads))
                 thread_splits = split_index(0, len(map_worker_thread), num_threads_reduce)
                 p = []
                 for t_idx_reduce in range(num_threads_reduce):

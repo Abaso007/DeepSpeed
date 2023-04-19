@@ -20,22 +20,25 @@ def find_fit_int_dtype(min_value, max_value):
             return np.uint32
         else:
             return np.uint64
+    elif max_value <= 127 and min_value >= -128:
+        return np.int8
+    elif max_value <= 32767 and min_value >= -32768:
+        return np.int16
+    elif max_value <= 2147483647 and min_value >= -2147483648:
+        return np.int32
     else:
-        if max_value <= 127 and min_value >= -128:
-            return np.int8
-        elif max_value <= 32767 and min_value >= -32768:
-            return np.int16
-        elif max_value <= 2147483647 and min_value >= -2147483648:
-            return np.int32
-        else:
-            return np.int64
+        return np.int64
 
 
 def split_index(start_idx, end_idx, num_partitions):
     partition_size = math.ceil((end_idx - start_idx) / num_partitions)
-    partitions = [[start_idx + x * partition_size,
-                   min(end_idx, start_idx + (x + 1) * partition_size)] for x in range(num_partitions)]
-    return partitions
+    return [
+        [
+            start_idx + x * partition_size,
+            min(end_idx, start_idx + (x + 1) * partition_size),
+        ]
+        for x in range(num_partitions)
+    ]
 
 
 def split_dataset(dataset, num_workers, worker_id, num_threads):

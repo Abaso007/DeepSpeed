@@ -35,19 +35,19 @@ class DS_BloomContainer(MetaTensorContainer, BaseTransformerContainer):
     def load_params(self, module, sd, weight_quantizer, mp_replace, prefix):
         param_names = (
             'self_attention.query_key_value.weight', \
-            'self_attention.query_key_value.bias', \
-            'self_attention.dense.weight', \
-            'self_attention.dense.bias', \
-            'mlp.dense_h_to_4h.weight', \
-            'mlp.dense_h_to_4h.bias', \
-            'mlp.dense_4h_to_h.weight', \
-            'mlp.dense_4h_to_h.bias', \
-            'post_attention_layernorm.weight', \
-            'post_attention_layernorm.bias', \
-            'input_layernorm.weight', \
-            'input_layernorm.bias'
+                'self_attention.query_key_value.bias', \
+                'self_attention.dense.weight', \
+                'self_attention.dense.bias', \
+                'mlp.dense_h_to_4h.weight', \
+                'mlp.dense_h_to_4h.bias', \
+                'mlp.dense_4h_to_h.weight', \
+                'mlp.dense_4h_to_h.bias', \
+                'post_attention_layernorm.weight', \
+                'post_attention_layernorm.bias', \
+                'input_layernorm.weight', \
+                'input_layernorm.bias'
         )
-        for i in range(0, 2):
+        for i in range(2):
             maybe_copy(module.attention,
                        sd,
                        weight_quantizer,

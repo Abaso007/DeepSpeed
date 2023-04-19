@@ -107,15 +107,21 @@ class DeepSpeedHybridEngine(DeepSpeedEngine):
             _ = plcy(None)
             if isinstance(plcy._orig_layer_class, list):
                 for orig_layer_class in plcy._orig_layer_class:
-                    self.inference_policies.update({orig_layer_class: (self.new_inference_container, plcy)})
+                    self.inference_policies[orig_layer_class] = (
+                        self.new_inference_container,
+                        plcy,
+                    )
             elif plcy._orig_layer_class is not None:
-                self.inference_policies.update({plcy._orig_layer_class: (self.new_inference_container, plcy)})
-        self.inference_policies.update({
-            nn.Linear: (LinearLayer, ),
-            nn.Embedding: (EmbeddingLayer, ),
-            nn.LayerNorm: (Normalize, ),
-            OPTLearnedPositionalEmbedding: (OPTEmbedding, )
-        })
+                self.inference_policies[plcy._orig_layer_class] = (
+                    self.new_inference_container,
+                    plcy,
+                )
+        self.inference_policies |= {
+            nn.Linear: (LinearLayer,),
+            nn.Embedding: (EmbeddingLayer,),
+            nn.LayerNorm: (Normalize,),
+            OPTLearnedPositionalEmbedding: (OPTEmbedding,),
+        }
 
     def _fuse_lora(self, params, lora_params):
         maybe_has_lora_params = [p for p in params if len(p.shape) > 1]
@@ -162,13 +168,12 @@ class DeepSpeedHybridEngine(DeepSpeedEngine):
                 get_accelerator().empty_cache()
                 retake_success = inference_cuda_module.retake_workspace()
 
-                if not retake_success:
-                    raise RuntimeError("Unable to retake inference workspace.")
+            if not retake_success:
+                raise RuntimeError("Unable to retake inference workspace.")
 
     def generate(self, *inputs, **kwargs):
         if self._total_batch_size is None:
-            bsz = inputs[0].shape[0] if len(inputs) > 0 else \
-                kwargs['input_ids'].shape[0]
+            bsz = inputs[0].shape[0] if inputs else kwargs['input_ids'].shape[0]
             self._total_batch_size = bsz * dist.get_world_size()
 
         self._t0 = time.time()
@@ -185,14 +190,12 @@ class DeepSpeedHybridEngine(DeepSpeedEngine):
                 for lg in range(layer_groups):
                     non_active_params = []
                     non_active_lora_params = []
-                    for layer_id in range(lg * partition_size, min(len(self.layer_params), (lg + 1) * partition_size),
-                                          1):
+                    for layer_id in range(lg * partition_size, min(len(self.layer_params), (lg + 1) * partition_size)):
                         non_tp_params.extend(self.layer_params[layer_id][:4])
                         non_active_params.extend(get_inactive_params(self.layer_params[layer_id]))
                         non_active_params.extend(get_inactive_params(self.layer_lora_params[layer_id]))
                     with GatheredParameters(non_active_params):
-                        for layer_id in range(lg * partition_size,
-                                              min(len(self.layer_params), (lg + 1) * partition_size), 1):
+                        for layer_id in range(lg * partition_size, min(len(self.layer_params), (lg + 1) * partition_size)):
                             if len(self.all_lora_params) > 0:
                                 self._fuse_lora(self.layer_params[layer_id], self.lora_params[layer_id])
                             self._inference_containers[layer_id].apply_tensor_parallelism(
@@ -205,16 +208,26 @@ class DeepSpeedHybridEngine(DeepSpeedEngine):
 
                 self._gather_latency = time.time() - self._t0
 
-                input_shape = inputs[0].shape if len(inputs) > 0 else \
-                                kwargs['input_ids'].shape
+                input_shape = inputs[0].shape if inputs else kwargs['input_ids'].shape
                 output = torch.zeros(
-                    (input_shape[0] * self._config.hybrid_engine.inference_tp_size, ) + input_shape[1:],
-                    dtype=inputs[0].dtype if len(inputs) > 0 else kwargs['input_ids'].dtype,
-                    device=inputs[0].device if len(inputs) > 0 else kwargs['input_ids'].device)
-                input_cont = inputs[0].contiguous() if len(inputs) > 0 else kwargs['input_ids'].contiguous()
+                    (
+                        input_shape[0]
+                        * self._config.hybrid_engine.inference_tp_size,
+                    )
+                    + input_shape[1:],
+                    dtype=inputs[0].dtype if inputs else kwargs['input_ids'].dtype,
+                    device=inputs[0].device
+                    if inputs
+                    else kwargs['input_ids'].device,
+                )
+                input_cont = (
+                    inputs[0].contiguous()
+                    if inputs
+                    else kwargs['input_ids'].contiguous()
+                )
                 dist.all_gather_into_tensor(output, input_cont, group=self.mp_group)
 
-                if len(inputs) > 0:
+                if inputs:
                     inputs = (output, )
                 else:
                     kwargs['input_ids'] = output
@@ -312,9 +325,11 @@ class DeepSpeedHybridEngine(DeepSpeedEngine):
             num_mp_groups = world_size // self._config.hybrid_engine.inference_tp_size
             for mp_group_id in range(num_mp_groups):
                 ranks = list(
-                    range(mp_group_id * self._config.hybrid_engine.inference_tp_size, \
-                          (mp_group_id + 1) * self._config.hybrid_engine.inference_tp_size, \
-                          1)
+                    range(
+                        mp_group_id * self._config.hybrid_engine.inference_tp_size,
+                        (mp_group_id + 1)
+                        * self._config.hybrid_engine.inference_tp_size,
+                    )
                 )
                 mp_group = dist.new_group(ranks)
                 if global_rank in ranks:

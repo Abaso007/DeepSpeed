@@ -74,8 +74,11 @@ class DeepSpeedTransformerInference(nn.Module):
             self.norm_b = nn.Parameter(torch.empty(self.config.hidden_size, dtype=data_type, device=device),
                                        requires_grad=False)
         self.layer_past = None
-        self.allocate_workspace = inference_cuda_module.allocate_workspace_fp32 if (not config.fp16) else \
-                                inference_cuda_module.allocate_workspace_fp16
+        self.allocate_workspace = (
+            inference_cuda_module.allocate_workspace_fp16
+            if config.fp16
+            else inference_cuda_module.allocate_workspace_fp32
+        )
         self._alloc_workspace = True
 
     @classmethod

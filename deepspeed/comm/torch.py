@@ -33,7 +33,7 @@ class TorchBackend(Backend):
         self.init_process_group(backend, timeout, init_method, rank, world_size)
 
     @classmethod
-    def get_all_gather_function(self):
+    def get_all_gather_function(cls):
         if hasattr(torch.distributed, "all_gather_into_tensor"):
             return torch.distributed.all_gather_into_tensor
         elif hasattr(torch.distributed, "_all_gather_base"):
@@ -41,7 +41,7 @@ class TorchBackend(Backend):
         return None
 
     @classmethod
-    def get_reduce_scatter_function(self):
+    def get_reduce_scatter_function(cls):
         if hasattr(torch.distributed, "reduce_scatter_tensor"):
             return torch.distributed.reduce_scatter_tensor
         elif hasattr(torch.distributed, "_reduce_scatter_base"):
@@ -93,7 +93,6 @@ class TorchBackend(Backend):
             utils.logger.warning("unable to find torch.distributed.all_gather_into_tensor. will fall back to "
                                  "torch.distributed.all_gather which will result in suboptimal performance. "
                                  "please consider upgrading your pytorch installation.")
-            pass
 
     def reduce_scatter_tensor(self, output_tensor, input_tensor, op=ReduceOp.SUM, group=None, async_op=False):
         if self.has_reduce_scatter_tensor():
@@ -106,7 +105,6 @@ class TorchBackend(Backend):
             utils.logger.warning("unable to find torch.distributed.reduce_scatter_tensor. will fall back to "
                                  "torch.distributed.reduce_scatter which will result in suboptimal performance. "
                                  "please consider upgrading your pytorch installation.")
-            pass
 
     def all_to_all_single(self,
                           output,
