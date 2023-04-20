@@ -42,7 +42,7 @@ class NebulaCheckpointEngine(CheckpointEngine):
         self.checkpoint = torch_nebula.Checkpoint(tag, -2)
 
     def save(self, state_dict, path: str):
-        log_dist(f"[Nebula] Create dummy files for loading.")
+        log_dist("[Nebula] Create dummy files for loading.")
         torch.save("", path)
 
         tag = _get_tag_from_path(path)
@@ -76,20 +76,20 @@ class NebulaCheckpointEngine(CheckpointEngine):
         else:
             checkpoint = torch_nebula.get_checkpoint(tag=tag, persist_path=self.nebula_load_path)
 
-        if checkpoint is None or (checkpoint is not None and checkpoint.tag == ''):
+        if checkpoint is None or checkpoint.tag == '':
             logger.info(
                 f"Unable to find valid checkpoint tag:{tag} from Nebula, try to get latest checkpoint again from nebula {self.nebula_load_path} path!"
             )
             # nebula tier3 latest
             checkpoint = torch_nebula.get_latest_checkpoint(persist_path=self.nebula_load_path)
-            if checkpoint is None or (checkpoint is not None and checkpoint.tag == ''):
-                logger.info(
-                    f"Unable to find latest checkpoint from Nebula tier3, try to get latest checkpoint again from nebula tier1 path!"
-                )
-                # nebula tier1 latest
-                checkpoint = torch_nebula.get_latest_checkpoint()
-                logger.warning(f"Unable to find valid checkpoint from Nebula under tag:{tag}.")
-                return None
+        if checkpoint is None or checkpoint.tag == '':
+            logger.info(
+                "Unable to find latest checkpoint from Nebula tier3, try to get latest checkpoint again from nebula tier1 path!"
+            )
+            # nebula tier1 latest
+            checkpoint = torch_nebula.get_latest_checkpoint()
+            logger.warning(f"Unable to find valid checkpoint from Nebula under tag:{tag}.")
+            return None
 
         tag = checkpoint.tag
         self.tag_flag = -1
@@ -102,6 +102,6 @@ class NebulaCheckpointEngine(CheckpointEngine):
         logger.info(f"[Nebula] all files for {tag} are saved in tier1. It is ready to start persisting")
         commit_rls = self.checkpoint.commit()
         if not commit_rls:
-            logger.error(f"[Nebula] failed to commit the checkpoint, please check the log.")
+            logger.error("[Nebula] failed to commit the checkpoint, please check the log.")
             return False
         return commit_rls

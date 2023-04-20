@@ -17,10 +17,7 @@ def older_torch():
     '''
     TORCH_MAJOR = int(torch.__version__.split('.')[0])
     TORCH_MINOR = int(torch.__version__.split('.')[1])
-    if TORCH_MAJOR == 1 and TORCH_MINOR < 8:
-        return True
-    else:
-        return False
+    return TORCH_MAJOR == 1 and TORCH_MINOR < 8
 
 
 def get_local_rank_from_launcher():
@@ -89,10 +86,7 @@ def get_tensor_position(func):
     # all_to_all and torch multiGPU colls
     elif 'input_tensor_list' in sig_params:
         arg = 'input_tensor_list'
-    if arg is None:
-        return -1
-    else:
-        return list(sig_params).index(arg)
+    return -1 if arg is None else list(sig_params).index(arg)
 
 
 def get_tensor_kwarg(func, kwargs):
@@ -117,23 +111,21 @@ def get_msg_size_from_args(func, *args, **kwargs):
     tensor_arg_position = -1
     tensor_arg = None
     # check if tensor arg is in args
-    if len(args) > 0:
+    if args:
         tensor_arg_position = get_tensor_position(func)
         if tensor_arg_position > -1:
             tensor_arg = args[get_tensor_position(func)]
     # check if tensor arg is in kwargs
-    if tensor_arg is None and len(kwargs) > 0:
+    if tensor_arg is None and kwargs:
         tensor_arg = get_tensor_kwarg(func, kwargs)
-    # if tensor arg is not present, no data is being transmitted
     if tensor_arg is None:
         return 0
+    # Sum of tensor sizes for list colls such as torch's all_to_all
+    # NOTE: msg_size for list colls will not be the actual size transmitted by a given MPI/NCCL call within the coll op. Instead, it's the total amount of data transmitted.
+    if type(tensor_arg) is list:
+        return sum(x.element_size() * x.nelement() for x in tensor_arg)
     else:
-        # Sum of tensor sizes for list colls such as torch's all_to_all
-        # NOTE: msg_size for list colls will not be the actual size transmitted by a given MPI/NCCL call within the coll op. Instead, it's the total amount of data transmitted.
-        if type(tensor_arg) is list:
-            return sum(x.element_size() * x.nelement() for x in tensor_arg)
-        else:
-            return tensor_arg.element_size() * tensor_arg.nelement()
+        return tensor_arg.element_size() * tensor_arg.nelement()
 
 
 def get_debug_log_name(func_args, debug):

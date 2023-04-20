@@ -127,14 +127,14 @@ class HFOPTLayerPolicy(TransformerPolicy):
                self.client_module.self_attn_layer_norm.bias
 
     def get_lora_params(self):
-        all_lora_params = []
-        for p in [
-            self.client_module.fc1, \
-            self.client_module.fc2, \
-            self.client_module.self_attn.q_proj, \
-            self.client_module.self_attn.k_proj, \
-            self.client_module.self_attn.v_proj, \
-            self.client_module.self_attn.out_proj, \
-            ]:
-            all_lora_params.append(maybe_get_lora(p))
-        return all_lora_params
+        return [
+            maybe_get_lora(p)
+            for p in [
+                self.client_module.fc1,
+                self.client_module.fc2,
+                self.client_module.self_attn.q_proj,
+                self.client_module.self_attn.k_proj,
+                self.client_module.self_attn.v_proj,
+                self.client_module.self_attn.out_proj,
+            ]
+        ]

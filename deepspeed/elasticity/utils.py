@@ -13,7 +13,4 @@ def is_torch_elastic_compatible():
     '''
     TORCH_MAJOR = int(torch.__version__.split('.')[0])
     TORCH_MINOR = int(torch.__version__.split('.')[1])
-    if TORCH_MAJOR == 1 and TORCH_MINOR >= 11:
-        return True
-    else:
-        return False
+    return TORCH_MAJOR == 1 and TORCH_MINOR >= 11

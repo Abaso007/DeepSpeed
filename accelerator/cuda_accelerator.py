@@ -28,21 +28,22 @@ class CUDA_Accelerator(DeepSpeedAccelerator):
         op_builder_module = importlib.import_module(op_builder_dir)
         for _, module_name, _ in pkgutil.iter_modules([os.path.dirname(op_builder_module.__file__)]):
             # avoid self references
-            if module_name != 'all_ops' and module_name != 'builder':
-                module = importlib.import_module("{}.{}".format(op_builder_dir, module_name))
+            if module_name not in ['all_ops', 'builder']:
+                module = importlib.import_module(f"{op_builder_dir}.{module_name}")
                 for member_name in module.__dir__():
-                    if member_name.endswith(
-                            'Builder'
-                    ) and member_name != "OpBuilder" and member_name != "CUDAOpBuilder" and member_name != "TorchCPUOpBuilder":  # avoid abstract classes
-                        if not member_name in self.class_dict:
-                            self.class_dict[member_name] = getattr(module, member_name)
+                    if (
+                        member_name.endswith('Builder')
+                        and member_name != "OpBuilder"
+                        and member_name != "CUDAOpBuilder"
+                        and member_name != "TorchCPUOpBuilder"
+                        and member_name not in self.class_dict
+                    ):
+                        self.class_dict[member_name] = getattr(module, member_name)
         # end initialize for create_op_builder()
 
     # Device APIs
     def device_name(self, device_index=None):
-        if device_index == None:
-            return 'cuda'
-        return 'cuda:{}'.format(device_index)
+        return 'cuda' if device_index is None else f'cuda:{device_index}'
 
     def device(self, device_index=None):
         return torch.cuda.device(device_index)
@@ -54,7 +55,7 @@ class CUDA_Accelerator(DeepSpeedAccelerator):
         return torch.cuda.current_device()
 
     def current_device_name(self):
-        return 'cuda:{}'.format(torch.cuda.current_device())
+        return f'cuda:{torch.cuda.current_device()}'
 
     def device_count(self):
         return torch.cuda.device_count()
@@ -155,16 +156,11 @@ class CUDA_Accelerator(DeepSpeedAccelerator):
 
     def is_fp16_supported(self):
         major, _ = torch.cuda.get_device_capability()
-        if major >= 7:
-            return True
-        else:
-            return False
+        return major >= 7
 
     # Misc
     def amp(self):
-        if hasattr(torch.cuda, 'amp'):
-            return torch.cuda.amp
-        return None
+        return torch.cuda.amp if hasattr(torch.cuda, 'amp') else None
 
     def is_available(self):
         return torch.cuda.is_available()
@@ -218,10 +214,7 @@ class CUDA_Accelerator(DeepSpeedAccelerator):
 
     def on_accelerator(self, tensor):
         device_str = str(tensor.device)
-        if device_str.startswith('cuda:'):
-            return True
-        else:
-            return False
+        return bool(device_str.startswith('cuda:'))
 
     def op_builder_dir(self):
         try:
@@ -239,17 +232,11 @@ class CUDA_Accelerator(DeepSpeedAccelerator):
 
     # create an instance of op builder and return, name specified by class_name
     def create_op_builder(self, class_name):
-        if class_name in self.class_dict:
-            return self.class_dict[class_name]()
-        else:
-            return None
+        return self.class_dict[class_name]() if class_name in self.class_dict else None
 
     # return an op builder class, name specified by class_name
     def get_op_builder(self, class_name):
-        if class_name in self.class_dict:
-            return self.class_dict[class_name]
-        else:
-            return None
+        return self.class_dict[class_name] if class_name in self.class_dict else None
 
     def build_extension(self):
         from torch.utils.cpp_extension import BuildExtension

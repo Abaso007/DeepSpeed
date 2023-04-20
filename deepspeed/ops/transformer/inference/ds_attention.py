@@ -140,23 +140,28 @@ class DeepSpeedSelfAttention(nn.Module):
             self._attn_qkvw = self.attn_qkvw
             self._attn_qkvb = self.attn_qkvb
 
-        if not self.config.pre_layer_norm:
-            qkv_out = self.linear_func(input=input,
-                                       weight=self._attn_qkvw,
-                                       bias=self._attn_qkvb,
-                                       add_bias=self.attn_qkvb is not None,
-                                       do_flash_attn=False,
-                                       num_heads=self.num_attention_heads_per_partition,
-                                       num_layers=DeepSpeedSelfAttention.num_layers)
-        else:
-            qkv_out = self.qkv_func(input=input,
-                                    weight=self._attn_qkvw,
-                                    bias=(self._attn_qkvb if self._attn_qkvb is not None else norm_b),
-                                    gamma=norm_w,
-                                    beta=norm_b,
-                                    add_bias=(self.attn_qkvb is not None),
-                                    num_layers=DeepSpeedSelfAttention.num_layers,
-                                    num_heads=self.num_attention_heads_per_partition)
+        qkv_out = (
+            self.qkv_func(
+                input=input,
+                weight=self._attn_qkvw,
+                bias=(self._attn_qkvb if self._attn_qkvb is not None else norm_b),
+                gamma=norm_w,
+                beta=norm_b,
+                add_bias=(self.attn_qkvb is not None),
+                num_layers=DeepSpeedSelfAttention.num_layers,
+                num_heads=self.num_attention_heads_per_partition,
+            )
+            if self.config.pre_layer_norm
+            else self.linear_func(
+                input=input,
+                weight=self._attn_qkvw,
+                bias=self._attn_qkvb,
+                add_bias=self.attn_qkvb is not None,
+                do_flash_attn=False,
+                num_heads=self.num_attention_heads_per_partition,
+                num_layers=DeepSpeedSelfAttention.num_layers,
+            )
+        )
         context_layer, key_layer, value_layer = self.compute_attention(qkv_out=qkv_out,
                                                                        input_mask=input_mask,
                                                                        layer_past=layer_past,
@@ -200,7 +205,7 @@ class BloomSelfAttention(DeepSpeedSelfAttention):
         # Get the size and dimension.
         last_dim = tensor.dim() - 1
         numerator, denominator = tensor.size()[last_dim], num_partitions
-        if not (numerator % denominator == 0):
+        if numerator % denominator != 0:
             raise ValueError(f"{numerator} is not divisible by {denominator}")
         last_dim_size = numerator // denominator
         # Split.

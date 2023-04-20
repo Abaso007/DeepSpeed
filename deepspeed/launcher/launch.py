@@ -138,12 +138,15 @@ def parse_range(rng):
         # value is not a single number
         parts = rng.split('-')
         if len(parts) != 2:
-            raise ValueError("Bad range: '%s', range must be either a number or two number separated by dash" %
-                             (rng, ))
+            raise ValueError(
+                f"Bad range: '{rng}', range must be either a number or two number separated by dash"
+            )
         start = int(parts[0])
         end = int(parts[1])
         if start > end:
-            raise ValueError("Bad range: '%s', range end must larger than or equal to start" % (rng, ))
+            raise ValueError(
+                f"Bad range: '{rng}', range end must larger than or equal to start"
+            )
         return range(start, end + 1)
 
 
@@ -162,8 +165,8 @@ def parse_range_list(range_str):
         sub_number_list = parse_range(sub_range)
         if sub_number_list[0] <= last:
             raise ValueError(
-                "Bad range: '%s', sub ranges must not overlap with each other and should be in ascend order" %
-                (range_str, ))
+                f"Bad range: '{range_str}', sub ranges must not overlap with each other and should be in ascend order"
+            )
         last = sub_number_list[-1]
         number_list.extend(sub_number_list)
     return number_list
@@ -217,7 +220,7 @@ def main():
     args = parse_args()
     current_env = os.environ.copy()
 
-    for k in current_env.keys():
+    for k in current_env:
         if "NCCL" in k:
             logger.info(f"{args.node_rank} {k}={current_env[k]}")
 
@@ -267,11 +270,10 @@ def main():
         with open(pid_file, 'w') as fd:
             fd.write(f"{launcher_pid}")
 
-    if not is_torch_elastic_compatible():
-        if args.enable_elastic_training:
-            logger.info(f"Disabling elastic training support as \
+    if not is_torch_elastic_compatible() and args.enable_elastic_training:
+        logger.info(f"Disabling elastic training support as \
                     PyTorch version should be greater than 1.11.x")
-            args.enable_elastic_training = False
+        args.enable_elastic_training = False
 
     if os.path.exists(DLTS_POD_ENV_PATH):
         with open(DLTS_POD_ENV_PATH) as file:
@@ -299,7 +301,7 @@ def main():
                     raise ValueError(f"unable to create directory {args.enable_each_rank_log} for each rank log.")
             log_name_prefix = time.strftime("%Y%m%d%H%M%S", time.localtime())
 
-        for local_rank in range(0, num_local_procs):
+        for local_rank in range(num_local_procs):
             # each process's rank
             dist_rank = global_rank_mapping[local_node][local_rank]
             current_env["RANK"] = str(dist_rank)
@@ -309,7 +311,7 @@ def main():
             cmd = []
             if args.bind_cores_to_rank:
                 check_for_numactl_pkg()
-                if 'KMP_AFFINITY' in os.environ.keys():
+                if 'KMP_AFFINITY' in os.environ:
                     raise ValueError("Environment variable KMP_AFFINITY conflicts with numactl "
                                      "because it interfere with how many CPU cores numactl can set. "
                                      "Unset KMP_AFFINITY before launching deepspeed.\n\n"
@@ -397,12 +399,14 @@ def main():
         run_id = os.environ.get("ELASTIC_RUN_ID", ELASTIC_TRAINING_ID_DEFAULT)
 
         # Creating config for rendezvous class
-        rdzv_parameters = RendezvousParameters(backend='c10d',
-                                               endpoint=args.master_addr + ":" + str(args.master_port),
-                                               run_id=run_id,
-                                               min_nodes=args.min_elastic_nodes,
-                                               max_nodes=args.max_elastic_nodes,
-                                               **rdzv_configs)
+        rdzv_parameters = RendezvousParameters(
+            backend='c10d',
+            endpoint=f"{args.master_addr}:{str(args.master_port)}",
+            run_id=run_id,
+            min_nodes=args.min_elastic_nodes,
+            max_nodes=args.max_elastic_nodes,
+            **rdzv_configs,
+        )
 
         spec = WorkerSpec(
             role='trainer',
@@ -435,9 +439,8 @@ def main():
             sys.exit(last_return_code)
         if signum in sig_names:
             logger.info(f"Main process received {sig_names[signum]}, exiting")
-        if args.save_pid:
-            if os.path.isfile(pid_file):
-                os.remove(pid_file)
+        if args.save_pid and os.path.isfile(pid_file):
+            os.remove(pid_file)
         sys.exit(1)
 
     # pass SIGINT/SIGTERM to children if the parent is being terminated
@@ -451,14 +454,13 @@ def main():
             if process.poll() is None:
                 # the process is still running
                 continue
+            if process.returncode != 0:
+                last_return_code = process.returncode  # for sigkill_handler
+                sigkill_handler(signal.SIGTERM, None)  # not coming back
             else:
-                if process.returncode != 0:
-                    last_return_code = process.returncode  # for sigkill_handler
-                    sigkill_handler(signal.SIGTERM, None)  # not coming back
-                else:
-                    # exited cleanly
-                    logger.info(f"Process {process.pid} exits successfully.")
-                    finished_processes.append(process)
+                # exited cleanly
+                logger.info(f"Process {process.pid} exits successfully.")
+                finished_processes.append(process)
         alive_processes = set(alive_processes) - set(finished_processes)
 
         time.sleep(1)

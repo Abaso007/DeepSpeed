@@ -55,10 +55,10 @@ class DeepSpeedDataSampler(object):
         self.data_parallel_rank = data_parallel_rank
         self.data_parallel_group = data_parallel_group
         self.micro_batch_times_data_parallel_size = \
-            self.micro_batch_size * data_parallel_size
+                self.micro_batch_size * data_parallel_size
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.global_batch_size = self.micro_batch_times_data_parallel_size * \
-            self.gradient_accumulation_steps
+                self.gradient_accumulation_steps
         self.global_rank = global_rank
         self.drop_last = drop_last
         self.np_rng = np.random.default_rng(self.data_efficiency_config[DATA_EFFICIENCY_SEED])
@@ -90,26 +90,28 @@ class DeepSpeedDataSampler(object):
                     CURRICULUM_LEARNING_METRICS][metric][CURRICULUM_LEARNING_DIFFICULTY_TYPE]
                 self.clustering_type[metric] = data_efficiency_config[DATA_SAMPLING][CURRICULUM_LEARNING][
                     CURRICULUM_LEARNING_METRICS][metric][CURRICULUM_LEARNING_CLUSTERING_TYPE]
-                if self.global_rank == 0:
-                    if self.clustering_type[metric] != CURRICULUM_LEARNING_SINGLE_CLUSTER:
-                        self.curriculum_index_to_sample[metric] = MMapIndexedDataset(
+                if (
+                    self.global_rank == 0
+                    and self.clustering_type[metric]
+                    != CURRICULUM_LEARNING_SINGLE_CLUSTER
+                ):
+                    self.curriculum_index_to_sample[metric] = MMapIndexedDataset(
+                        data_efficiency_config[DATA_SAMPLING][CURRICULUM_LEARNING][CURRICULUM_LEARNING_METRICS]
+                        [metric][CURRICULUM_LEARNING_SAMPLE_PATH],
+                        skip_warmup=True)
+                    if self.difficulty_type[metric] == CURRICULUM_LEARNING_VALUE_BASED:
+                        self.curriculum_index_to_metric[metric] = MMapIndexedDataset(
                             data_efficiency_config[DATA_SAMPLING][CURRICULUM_LEARNING][CURRICULUM_LEARNING_METRICS]
-                            [metric][CURRICULUM_LEARNING_SAMPLE_PATH],
+                            [metric][CURRICULUM_LEARNING_METRIC_PATH],
                             skip_warmup=True)
-                        if self.difficulty_type[metric] == CURRICULUM_LEARNING_VALUE_BASED:
-                            self.curriculum_index_to_metric[metric] = MMapIndexedDataset(
-                                data_efficiency_config[DATA_SAMPLING][CURRICULUM_LEARNING][CURRICULUM_LEARNING_METRICS]
-                                [metric][CURRICULUM_LEARNING_METRIC_PATH],
-                                skip_warmup=True)
 
         # Sanity checks.
-        assert self.total_samples > 0, \
-            'no sample to consume: {}'.format(self.total_samples)
+        assert self.total_samples > 0, f'no sample to consume: {self.total_samples}'
         assert self.micro_batch_size > 0
         assert data_parallel_size > 0
-        assert self.data_parallel_rank < data_parallel_size, \
-            'data_parallel_rank should be smaller than data size: {}, ' \
-            '{}'.format(self.data_parallel_rank, data_parallel_size)
+        assert (
+            self.data_parallel_rank < data_parallel_size
+        ), f'data_parallel_rank should be smaller than data size: {self.data_parallel_rank}, {data_parallel_size}'
 
     def __len__(self):
         return self.total_samples
@@ -171,10 +173,10 @@ class DeepSpeedDataSampler(object):
         cluster_path = f"{cluster_path}/{cluster_fname}"
         if self.global_rank == 0:
             new_cluster = None
-            need_clustering = 0
-            for metric in self.clustering_type:
-                if self.clustering_type[metric] != CURRICULUM_LEARNING_SINGLE_CLUSTER:
-                    need_clustering += 1
+            need_clustering = sum(
+                self.clustering_type[metric] != CURRICULUM_LEARNING_SINGLE_CLUSTER
+                for metric in self.clustering_type
+            )
             if need_clustering > 1:
                 for metric in self.curriculum_schedulers:
                     if self.clustering_type[metric] == CURRICULUM_LEARNING_SINGLE_CLUSTER:
@@ -182,15 +184,14 @@ class DeepSpeedDataSampler(object):
                                                    stop=self.one_epoch_total_samples,
                                                    step=1,
                                                    dtype=self.index_dtype)
-                    else:
-                        if self.difficulty_type[metric] == CURRICULUM_LEARNING_VALUE_BASED:
-                            metric_cluster = self.get_sample_based_on_metric_value(metric, float('-inf'),
-                                                                                   self.current_difficulties[metric])
-                        elif self.difficulty_type[metric] == CURRICULUM_LEARNING_PERCENTILE_BASED:
-                            metric_cluster = self.get_sample_based_on_metric_percentile(
-                                metric, 0, self.current_difficulties[metric])
+                    elif self.difficulty_type[metric] == CURRICULUM_LEARNING_VALUE_BASED:
+                        metric_cluster = self.get_sample_based_on_metric_value(metric, float('-inf'),
+                                                                               self.current_difficulties[metric])
+                    elif self.difficulty_type[metric] == CURRICULUM_LEARNING_PERCENTILE_BASED:
+                        metric_cluster = self.get_sample_based_on_metric_percentile(
+                            metric, 0, self.current_difficulties[metric])
                     new_cluster = metric_cluster if new_cluster is None else \
-                        np.intersect1d(new_cluster, metric_cluster, assume_unique=True)
+                            np.intersect1d(new_cluster, metric_cluster, assume_unique=True)
                 for cluster in self.data_clusters:
                     new_cluster = np.setdiff1d(new_cluster, cluster[0], assume_unique=True)
             else:
@@ -256,38 +257,40 @@ class DeepSpeedDataSampler(object):
         return samples
 
     def get_next_global_batch(self):
-        if self.data_efficiency_config[DATA_SAMPLING][CURRICULUM_LEARNING][CURRICULUM_LEARNING_ENABLED]:
-            self.curriculum_step += 1
-            new_cluster = False
-            previous_difficulties = {}
-            for metric in self.curriculum_schedulers:
-                next_difficulty = self.curriculum_schedulers[metric].update_difficulty(self.curriculum_step)
-                if metric not in self.current_difficulties or \
+        if not self.data_efficiency_config[DATA_SAMPLING][CURRICULUM_LEARNING][
+            CURRICULUM_LEARNING_ENABLED
+        ]:
+            return
+        self.curriculum_step += 1
+        new_cluster = False
+        previous_difficulties = {}
+        for metric in self.curriculum_schedulers:
+            next_difficulty = self.curriculum_schedulers[metric].update_difficulty(self.curriculum_step)
+            if metric not in self.current_difficulties or \
                     next_difficulty != self.current_difficulties[metric]:
-                    new_cluster = True
-                if metric in self.current_difficulties:
-                    previous_difficulties[metric] = self.current_difficulties[metric]
-                else:
-                    if self.difficulty_type[metric] == CURRICULUM_LEARNING_VALUE_BASED:
-                        previous_difficulties[metric] = float('-inf')
-                    elif self.difficulty_type[metric] == CURRICULUM_LEARNING_PERCENTILE_BASED:
-                        previous_difficulties[metric] = 0
-                self.current_difficulties[metric] = next_difficulty
-            if new_cluster:
-                self.get_new_cluster(previous_difficulties)
-            if self.global_rank == 0:
-                samples_per_cluster = self.sample_from_clusters()
-                batch = []
-                for cidx in range(len(samples_per_cluster)):
-                    batch += self.get_sample_from_cluster(cidx, samples_per_cluster[cidx])
-                self.np_rng.shuffle(batch)
-                batch = torch.tensor(batch, device=get_accelerator().current_device_name(), dtype=torch.long).view(-1)
-            else:
-                batch = torch.empty(self.global_batch_size,
-                                    device=get_accelerator().current_device_name(),
-                                    dtype=torch.long)
-            dist.broadcast(batch, 0, group=self.data_parallel_group)
-            self.batch = batch.tolist()
+                new_cluster = True
+            if metric in self.current_difficulties:
+                previous_difficulties[metric] = self.current_difficulties[metric]
+            elif self.difficulty_type[metric] == CURRICULUM_LEARNING_VALUE_BASED:
+                previous_difficulties[metric] = float('-inf')
+            elif self.difficulty_type[metric] == CURRICULUM_LEARNING_PERCENTILE_BASED:
+                previous_difficulties[metric] = 0
+            self.current_difficulties[metric] = next_difficulty
+        if new_cluster:
+            self.get_new_cluster(previous_difficulties)
+        if self.global_rank == 0:
+            samples_per_cluster = self.sample_from_clusters()
+            batch = []
+            for cidx in range(len(samples_per_cluster)):
+                batch += self.get_sample_from_cluster(cidx, samples_per_cluster[cidx])
+            self.np_rng.shuffle(batch)
+            batch = torch.tensor(batch, device=get_accelerator().current_device_name(), dtype=torch.long).view(-1)
+        else:
+            batch = torch.empty(self.global_batch_size,
+                                device=get_accelerator().current_device_name(),
+                                dtype=torch.long)
+        dist.broadcast(batch, 0, group=self.data_parallel_group)
+        self.batch = batch.tolist()
 
     def __iter__(self):
         while self.consumed_samples <= self.total_samples:

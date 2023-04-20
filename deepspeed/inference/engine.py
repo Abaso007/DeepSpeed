@@ -76,14 +76,13 @@ def build_bloom_alibi_tensor(attention_mask: torch.Tensor, num_heads: int, dtype
     # https://github.com/huggingface/transformers/blob/f681437203baa7671de3174b0fa583c349d9d5e1/src/transformers/models/t5/modeling_t5.py#L527
     arange_tensor = ((attention_mask.cumsum(dim=-1) - 1) * attention_mask)[:, None, :]
     alibi = slopes[..., None] * arange_tensor
-    if dist.is_initialized():
-        num_heads_per_rank = int(num_heads / dist.get_world_size())
-        offset = dist.get_rank() * num_heads_per_rank
-        alibi = alibi.view(batch_size, num_heads, 1, seq_length)
-        alibi = alibi[:, offset:num_heads_per_rank + offset, :, :]
-        return alibi.reshape(batch_size * num_heads_per_rank, 1, seq_length).to(dtype)
-    else:
+    if not dist.is_initialized():
         return alibi.reshape(batch_size * num_heads, 1, seq_length).to(dtype)
+    num_heads_per_rank = int(num_heads / dist.get_world_size())
+    offset = dist.get_rank() * num_heads_per_rank
+    alibi = alibi.view(batch_size, num_heads, 1, seq_length)
+    alibi = alibi[:, offset:num_heads_per_rank + offset, :, :]
+    return alibi.reshape(batch_size * num_heads_per_rank, 1, seq_length).to(dtype)
 
 
 class InferenceEngine(Module):
@@ -142,14 +141,14 @@ class InferenceEngine(Module):
             # This is a hack to remove the prepare_mask function on HF side for BLOOM architecture
             self.remove_mask_prepare_for_bloom()
 
-        if self.injection_dict or not config.replace_with_kernel_inject:
-            # This is a hack to redefine the alibi func due to TP
-            if config.tensor_parallel.tp_size > 1:
-                self.build_alibi_tensor()
+        if (
+            self.injection_dict or not config.replace_with_kernel_inject
+        ) and config.tensor_parallel.tp_size > 1:
+            self.build_alibi_tensor()
 
         if get_accelerator().device_name() == 'cuda' and config.enable_cuda_graph:
             assert pkg_version.parse(torch.__version__) >= pkg_version.parse("1.10"), \
-                "If you want to use cuda graph, please upgrade torch to at least v1.10"
+                    "If you want to use cuda graph, please upgrade torch to at least v1.10"
 
         if config.checkpoint and not config.replace_with_kernel_inject:
             self._load_checkpoint(config.checkpoint)
@@ -183,25 +182,25 @@ class InferenceEngine(Module):
             assert not config.replace_with_kernel_inject, "Cannot use both user specified injection policy and kernel injection"
             for client_module, injection_policy in self.injection_dict.items():
                 # construct the tuple and pass that instead of a string or dict.
+                config.injection_policy_tuple = (
+                    (injection_policy,)
+                    if isinstance(injection_policy, str)
+                    else injection_policy
+                )
+                self._apply_injection_policy(config, client_module)
+        elif config.replace_with_kernel_inject:
+            # 2. DeepSpeed Kernel Injection
+            self._apply_injection_policy(config)
+        else:
+            # 3. Automatic Tensor Parallelism
+            parser_dict = AutoTP.tp_parser(model)
+            print("AutoTP: ", parser_dict)
+            for client_module, injection_policy in parser_dict:
                 if isinstance(injection_policy, str):
                     config.injection_policy_tuple = (injection_policy, )
                 else:
                     config.injection_policy_tuple = injection_policy
                 self._apply_injection_policy(config, client_module)
-        else:
-            if config.replace_with_kernel_inject:
-                # 2. DeepSpeed Kernel Injection
-                self._apply_injection_policy(config)
-            else:
-                # 3. Automatic Tensor Parallelism
-                parser_dict = AutoTP.tp_parser(model)
-                print("AutoTP: ", parser_dict)
-                for client_module, injection_policy in parser_dict:
-                    if isinstance(injection_policy, str):
-                        config.injection_policy_tuple = (injection_policy, )
-                    else:
-                        config.injection_policy_tuple = injection_policy
-                    self._apply_injection_policy(config, client_module)
 
         device = get_accelerator().current_device_name()
         self.module.to(device)
@@ -232,14 +231,16 @@ class InferenceEngine(Module):
         self.config = getattr(self.module, 'config', None) if config.config is None else config.config
 
     def remove_mask_prepare_for_bloom(self):
-        if hasattr(self.module, 'transformer'):
-            if hasattr(self.module.transformer, '_prepare_attn_mask'):
-                self.module.transformer._prepare_attn_mask = lambda attention_mask, *args, **kwargs: attention_mask
+        if hasattr(self.module, 'transformer') and hasattr(
+            self.module.transformer, '_prepare_attn_mask'
+        ):
+            self.module.transformer._prepare_attn_mask = lambda attention_mask, *args, **kwargs: attention_mask
 
     def build_alibi_tensor(self):
-        if hasattr(self.module, 'transformer'):
-            if hasattr(self.module.transformer, 'build_alibi_tensor'):
-                self.module.transformer.build_alibi_tensor = build_bloom_alibi_tensor
+        if hasattr(self.module, 'transformer') and hasattr(
+            self.module.transformer, 'build_alibi_tensor'
+        ):
+            self.module.transformer.build_alibi_tensor = build_bloom_alibi_tensor
 
     def _pre_forward_hook(self, module, *inputs, **kwargs):
         if self.use_cuda_events:
@@ -265,7 +266,7 @@ class InferenceEngine(Module):
             local_rank = int(os.getenv('LOCAL_RANK', '0'))
             get_accelerator().set_device(local_rank)
 
-            ranks = [i for i in range(config.tensor_parallel.tp_size)]
+            ranks = list(range(config.tensor_parallel.tp_size))
             self.mp_group = dist.new_group(ranks)
             InferenceEngine.inference_mp_group = self.mp_group
         else:
@@ -344,16 +345,24 @@ class InferenceEngine(Module):
             args = (state_dict, prefix, {}, True, [], [], error_msgs)
             if hasattr(module, 'weight'):
                 if 'query_key_value' in prefix:
-                    module.weight = self.mp_replace.qkv_copy(module.weight.data, state_dict[prefix + 'weight'])
+                    module.weight = self.mp_replace.qkv_copy(
+                        module.weight.data, state_dict[f'{prefix}weight']
+                    )
                 else:
-                    module.weight = self.mp_replace.copy(module.weight.data, state_dict[prefix + 'weight'])
+                    module.weight = self.mp_replace.copy(
+                        module.weight.data, state_dict[f'{prefix}weight']
+                    )
             else:
-                module.norm.weight = self.mp_replace.copy(module.norm.weight.data, state_dict[prefix + 'weight'])
-            if prefix + 'bias' in self.key_list:
+                module.norm.weight = self.mp_replace.copy(
+                    module.norm.weight.data, state_dict[f'{prefix}weight']
+                )
+            if f'{prefix}bias' in self.key_list:
                 if hasattr(module, 'norm'):
-                    module.norm.bias = self.mp_replace.copy(module.norm.bias, state_dict[prefix + 'bias'])
+                    module.norm.bias = self.mp_replace.copy(
+                        module.norm.bias, state_dict[f'{prefix}bias']
+                    )
                 else:
-                    data = state_dict[prefix + 'bias']
+                    data = state_dict[f'{prefix}bias']
                     data = data.to(get_accelerator().current_device_name())
                     module.bias = self.mp_replace.copy(module.bias, data)
 
@@ -369,12 +378,15 @@ class InferenceEngine(Module):
             for name, child in module.named_children():
                 if child.__class__ in layer_policies:
                     checking_key = prefix + name + '.'
-                    if not any(checking_key in item for item in self.key_list):
+                    if all(checking_key not in item for item in self.key_list):
                         continue
-                    if len(list(child.parameters())) > 0 and list(child.parameters())[0].numel() == 0:
-                        if len(child.weight.ds_shape) == 1:
-                            child = Normalize(dim=child.weight.ds_shape[-1], dtype=child.weight.dtype, eps=child.eps)
-                            setattr(module, name, child)
+                    if (
+                        list(child.parameters())
+                        and list(child.parameters())[0].numel() == 0
+                        and len(child.weight.ds_shape) == 1
+                    ):
+                        child = Normalize(dim=child.weight.ds_shape[-1], dtype=child.weight.dtype, eps=child.eps)
+                        setattr(module, name, child)
                     load(child, self.sd, prefix + name + '.')
                 else:
                     load_module_recursive(child, prefix if level == 0 else prefix + name + '.', level + 1)
@@ -387,9 +399,11 @@ class InferenceEngine(Module):
         checkpoint = SDLoaderFactory.get_sd_loader_json(checkpoint_dir,
                                                         self.checkpoint_engine) if checkpoint_dir is not None else None
 
-        generic_injection(self.module,
-                          fp16=(config.dtype == torch.half) or (config.dtype == torch.int8),
-                          enable_cuda_graph=config.enable_cuda_graph)
+        generic_injection(
+            self.module,
+            fp16=config.dtype in [torch.half, torch.int8],
+            enable_cuda_graph=config.enable_cuda_graph,
+        )
 
         if isinstance(self.module, torch.nn.Module):
             # config is our DeepSpeedInferenceConfig and self.config is the HF model config
@@ -410,11 +424,7 @@ class InferenceEngine(Module):
             mp_rank = 0 if self.mpu is None else self.mpu.get_model_parallel_rank()
             mp_rank_str = "{:02d}".format(mp_rank)
 
-        ckpt_name = os.path.join(
-            checkpoints_path,
-            "mp_rank_" + mp_rank_str + "_model_states.pt",
-        )
-        return ckpt_name
+        return os.path.join(checkpoints_path, f"mp_rank_{mp_rank_str}_model_states.pt")
 
     def _load_checkpoint(self, load_dir, load_module_strict=True, tag=None):
         is_pipe_parallel = isinstance(self.module, PipelineModule)
@@ -459,9 +469,7 @@ class InferenceEngine(Module):
             moe, _ = has_moe_layers(self.module)
             if moe:
                 from deepspeed.runtime.engine import DeepSpeedEngine
-                old_moe_load = False
-                if not isinstance(checkpoint['num_experts'], list):
-                    old_moe_load = True
+                old_moe_load = not isinstance(checkpoint['num_experts'], list)
                 DeepSpeedEngine.load_moe_state_dict(load_dir,
                                                     tag,
                                                     state_dict=checkpoint[self._choose_module_key(checkpoint)],
@@ -474,8 +482,9 @@ class InferenceEngine(Module):
                                         strict=load_module_strict)
 
     def _choose_module_key(self, sd):
-        assert not ('module' in sd
-                    and 'model' in sd), "checkpoint has both 'model' and 'module' keys, not sure how to proceed"
+        assert (
+            'module' not in sd or 'model' not in sd
+        ), "checkpoint has both 'model' and 'module' keys, not sure how to proceed"
         assert 'module' in sd or 'model' in sd, "checkpoint contains neither 'model' or 'module' keys, not sure how to proceed"
         if 'module' in sd:
             return 'module'
@@ -486,11 +495,7 @@ class InferenceEngine(Module):
         if not isinstance(self.module, torch.nn.Module):
             return
 
-        if False:  #config.dtype is torch.int8 and self.quantization_scales is None:
-            quantizer = WeightQuantization(mlp_extra_grouping=self.mlp_extra_grouping)
-            model, self.quantization_scales = quantizer.model_quantize(self.module, self.injection_dict,
-                                                                       self.quantize_bits, self.quantize_groups)
-        elif config.dtype == torch.half:
+        if config.dtype == torch.half:
             self.module.half()
         elif config.dtype == torch.bfloat16:
             self.module.bfloat16()
@@ -502,7 +507,7 @@ class InferenceEngine(Module):
         cuda_stream = get_accelerator().Stream()
         cuda_stream.wait_stream(get_accelerator().current_stream())
         with get_accelerator().stream(cuda_stream):
-            for i in range(3):
+            for _ in range(3):
                 ret = self.module(*inputs, **kwargs)
         get_accelerator().current_stream().wait_stream(cuda_stream)
 
@@ -547,15 +552,14 @@ class InferenceEngine(Module):
     def _local_cuda_graph_used(self, module):
         if isinstance(module, torch.nn.Module):
             return False
-        else:
-            sub_module_cuda_graph = False
-            for name in module.__dict__.keys():
-                sub_module = getattr(module, name)
+        sub_module_cuda_graph = False
+        for name in module.__dict__.keys():
+            sub_module = getattr(module, name)
 
-                if self._module_match(sub_module) and hasattr(sub_module, "enable_cuda_graph"):
-                    sub_module_cuda_graph = True
+            if self._module_match(sub_module) and hasattr(sub_module, "enable_cuda_graph"):
+                sub_module_cuda_graph = True
 
-            return sub_module_cuda_graph
+        return sub_module_cuda_graph
 
     def forward(self, *inputs, **kwargs):
         """Execute forward propagation
@@ -570,11 +574,9 @@ class InferenceEngine(Module):
             start = time.time()
 
         if get_accelerator().device_name() == 'cuda' and self._config.enable_cuda_graph and not self.local_cuda_graph:
-            if self.cuda_graph_created:
-                outputs = self._graph_replay(*inputs, **kwargs)
-            else:
+            if not self.cuda_graph_created:
                 self._create_cuda_graph(*inputs, **kwargs)
-                outputs = self._graph_replay(*inputs, **kwargs)
+            outputs = self._graph_replay(*inputs, **kwargs)
         else:
             outputs = self.module(*inputs, **kwargs)
 

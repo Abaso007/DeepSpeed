@@ -121,10 +121,7 @@ class OnebitAdam(torch.optim.Optimizer):
             scale (float, optional): factor to divide gradient tensor values
                 by before applying to weights. (default: 1)
         """
-        loss = None
-        if closure is not None:
-            loss = closure()
-
+        loss = closure() if closure is not None else None
         gather_time = 0
         allgather_time = 0
         all_time = 0
@@ -134,11 +131,7 @@ class OnebitAdam(torch.optim.Optimizer):
 
         if grads is None:
             grads_group = [None] * len(self.param_groups)
-        # backward compatibility
-        # assuming a list/generator of parameter means single group
-        elif isinstance(grads, types.GeneratorType):
-            grads_group = [grads]
-        elif type(grads[0]) != list:
+        elif isinstance(grads, types.GeneratorType) or type(grads[0]) != list:
             grads_group = [grads]
         else:
             grads_group = grads
@@ -191,42 +184,35 @@ class OnebitAdam(torch.optim.Optimizer):
                 if self.adam_freeze_key is False:
                     exp_avg.mul_(beta1).add_(1 - beta1, grad)
                     exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
-                    grad = None
-                    if self.initialize:
-                        update = exp_avg / (exp_avg_sq.sqrt() + group['eps'])
-
+                elif 'non_freeze' in group.keys() and group['non_freeze'] is True:
+                    dist.all_reduce(grad)
+                    grad.mul_(1 / dist.get_world_size())
+                    exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                    exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
                 else:
-                    if 'non_freeze' in group.keys() and group['non_freeze'] is True:
-                        dist.all_reduce(grad)
-                        grad.mul_(1 / dist.get_world_size())
+                    if self.initialize is True:
                         exp_avg.mul_(beta1).add_(1 - beta1, grad)
-                        exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
-                        grad = None
-                    else:
-                        if self.initialize is True:
-                            exp_avg.mul_(beta1).add_(1 - beta1, grad)
-                        grad = None
+                    if self.size > 1:
+                        exp_avg.set_(
+                            self.comm_backend_handle.compressed_allreduce(exp_avg, state['worker_error'],
+                                                                          state['server_error'],
+                                                                          self.deepspeed.local_rank))
+                    # Because 1-bit compression cannot represent exact zero, it is required to
+                    # provide a momentum mask for those params that have constant exact zeros in their
+                    # momentums, otherwise the compression error would keep accumulating.
+                    # For example, for BERT pre-training seq 128, bert.embeddings.position_embeddings.weight
+                    # always have exact zeros in its momentum for row 129 to 512, because it only
+                    # learns up to seq length 128 while the model supports up to 512 seq length.
+                    # (See example in DeepSpeedExamples/bing_bert/deepspeed_train.py.)
+                    if 'exp_avg_mask' in group:
+                        if exp_avg.device != group['exp_avg_mask'].device:
+                            group['exp_avg_mask'] = group['exp_avg_mask'].to(device=exp_avg.device)
+                        exp_avg.mul_(group['exp_avg_mask'])
 
-                        if self.size > 1:
-                            exp_avg.set_(
-                                self.comm_backend_handle.compressed_allreduce(exp_avg, state['worker_error'],
-                                                                              state['server_error'],
-                                                                              self.deepspeed.local_rank))
-                        # Because 1-bit compression cannot represent exact zero, it is required to
-                        # provide a momentum mask for those params that have constant exact zeros in their
-                        # momentums, otherwise the compression error would keep accumulating.
-                        # For example, for BERT pre-training seq 128, bert.embeddings.position_embeddings.weight
-                        # always have exact zeros in its momentum for row 129 to 512, because it only
-                        # learns up to seq length 128 while the model supports up to 512 seq length.
-                        # (See example in DeepSpeedExamples/bing_bert/deepspeed_train.py.)
-                        if 'exp_avg_mask' in group:
-                            if exp_avg.device != group['exp_avg_mask'].device:
-                                group['exp_avg_mask'] = group['exp_avg_mask'].to(device=exp_avg.device)
-                            exp_avg.mul_(group['exp_avg_mask'])
+                if self.initialize:
+                    update = exp_avg / (exp_avg_sq.sqrt() + group['eps'])
 
-                    if self.initialize:
-                        update = exp_avg / (exp_avg_sq.sqrt() + group['eps'])
-
+                grad = None
                 if self.initialize:
                     if group['weight_decay'] > 0.0:
                         update += group['weight_decay'] * p.data
@@ -244,14 +230,13 @@ class OnebitAdam(torch.optim.Optimizer):
             print(f"Finished the initialization step at rank {dist.get_rank()}")
             return loss
 
-        if self.adam_freeze_key is False:
-            if state['step'] >= self.freeze_step:
-                print('OnebitAdam - starting compressed communication')
-                self.adam_freeze_key = True
-                if self.using_pipeline:
-                    self.deepspeed.pipeline_enable_backward_allreduce = False
-                else:
-                    self.deepspeed.enable_backward_allreduce = False
+        if self.adam_freeze_key is False and state['step'] >= self.freeze_step:
+            print('OnebitAdam - starting compressed communication')
+            self.adam_freeze_key = True
+            if self.using_pipeline:
+                self.deepspeed.pipeline_enable_backward_allreduce = False
+            else:
+                self.deepspeed.enable_backward_allreduce = False
 
         return loss
 
@@ -267,7 +252,7 @@ class OnebitAdam(torch.optim.Optimizer):
         for i, group in enumerate(self.param_groups):
             if 'exp_avg_mask' in group:
                 state_dict['param_groups'][i]['exp_avg_mask'] = group['exp_avg_mask']
-            elif 'exp_avg_mask' not in group and 'exp_avg_mask' in state_dict['param_groups'][i]:
+            elif 'exp_avg_mask' in state_dict['param_groups'][i]:
                 state_dict['param_groups'][i].pop('exp_avg_mask')
         super().load_state_dict(state_dict)
         if self.state[self.param_groups[0]['params'][0]]['step'] < self.freeze_step:

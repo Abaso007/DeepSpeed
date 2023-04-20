@@ -214,14 +214,22 @@ class DeepSpeedMoEInference(nn.Module):
                                            mp_group)
             self.res_coef = nn.Parameter(torch.Tensor(self.config.hidden_size, 2))
             self.coef_func = inference_cuda_module.softmax_fp16 if self.config.fp16 or self.config.q_int8 else \
-                                        inference_cuda_module.softmax_fp32
+                                            inference_cuda_module.softmax_fp32
             self.vector_matmul_func = inference_cuda_module.vector_matmul_fp16 if config.fp16 else \
-                                    inference_cuda_module.vector_matmul_fp32
+                                        inference_cuda_module.vector_matmul_fp32
 
         config.mp_size = 1
         self.mlp = nn.ModuleList(
-            DeepSpeedMoEMLP(config, quantize_scales, quantize_groups, merge_count, mlp_extra_grouping, expert_mp_group)
-            for i in range(self.config.moe_experts))
+            DeepSpeedMoEMLP(
+                config,
+                quantize_scales,
+                quantize_groups,
+                merge_count,
+                mlp_extra_grouping,
+                expert_mp_group,
+            )
+            for _ in range(self.config.moe_experts)
+        )
 
         self.moe_gate = TopKGate(self.config.hidden_size, self.config.global_experts, self.config.k,
                                  self.config.capacity_factor, self.config.eval_capacity_factor,
@@ -235,11 +243,11 @@ class DeepSpeedMoEInference(nn.Module):
         print("DeepSpeed MoE Transformer Inference config is ", self.config.__dict__)
 
         self.bias_residual_func = inference_cuda_module.bias_residual_fp16 if config.fp16 or config.q_int8 else \
-                                        inference_cuda_module.bias_residual_fp32
+                                            inference_cuda_module.bias_residual_fp32
         self.ds_layernorm = inference_cuda_module.layer_norm_fp16 if self.config.fp16 or self.config.q_int8 else \
-                                        inference_cuda_module.layer_norm_fp32
+                                            inference_cuda_module.layer_norm_fp32
         self.einsum_sec_sm_ecm = inference_cuda_module.einsum_sec_sm_ecm_fp16 if self.config.fp16 or self.config.q_int8 else \
-                                        inference_cuda_module.einsum_sec_sm_ecm_fp32
+                                            inference_cuda_module.einsum_sec_sm_ecm_fp32
 
     def res_coef_func(self, inp, async_op):
         inp = self.vector_matmul_func(inp, self.res_coef, async_op)
@@ -271,12 +279,11 @@ class DeepSpeedMoEInference(nn.Module):
         return expert_outputs
 
     def _alltoall(self, dispatched_attention):
-        if dist.get_world_size(group=self.ep_group) > 1:
-            dispatched_input = torch.empty_like(dispatched_attention)
-            dist.all_to_all_single(dispatched_input, dispatched_attention, group=self.ep_group)
-            return dispatched_input
-        else:
+        if dist.get_world_size(group=self.ep_group) <= 1:
             return dispatched_attention
+        dispatched_input = torch.empty_like(dispatched_attention)
+        dist.all_to_all_single(dispatched_input, dispatched_attention, group=self.ep_group)
+        return dispatched_input
 
     def scale_expert_output(self, attention_output, expert_output, combined_weights):
         combined_output = torch.matmul(
@@ -303,7 +310,7 @@ class DeepSpeedMoEInference(nn.Module):
         input_type = input.dtype
 
         if (self.config.fp16 or self.config.q_int8) \
-            and input.dtype == torch.float:
+                and input.dtype == torch.float:
             input = input.half()
 
         with torch.no_grad():
@@ -312,10 +319,10 @@ class DeepSpeedMoEInference(nn.Module):
                                               self.norm_w, self.norm_b)
 
             if get_present:
-                attention_output, p_key, p_value = attention_output[0:3]
+                attention_output, p_key, p_value = attention_output[:3]
                 presents = (p_key, p_value)
             elif output_attentions:
-                attention_output, _, _, context_output = attention_output[0:4]
+                attention_output, _, _, context_output = attention_output[:4]
             else:
                 attention_output = attention_output[0]
 

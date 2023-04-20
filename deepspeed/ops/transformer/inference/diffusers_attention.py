@@ -41,7 +41,7 @@ class DeepSpeedDiffusersAttentionFunction(Function):
         def _transpose_for_context(x):
             x = x.permute(0, 2, 1, 3)
             new_x_layer_shape = x.size()[:-2] + \
-                                      (hidden_size_per_partition,)
+                                          (hidden_size_per_partition,)
             return x.reshape(*new_x_layer_shape)
 
         def _transpose_for_scores(x):
@@ -57,7 +57,7 @@ class DeepSpeedDiffusersAttentionFunction(Function):
             head_size = input.shape[-1] // config.heads
             do_flash_attn = (head_size <= 128)
             scale = (1 / norm_factor) * (1 / norm_factor)
-            if do_flash_attn and context == None:
+            if do_flash_attn and context is None:
                 qkv_out = linear_func(input, attn_qkvw, attn_qkvb if attn_qkvb is not None else attn_qkvw, attn_qkvb
                                       is not None, do_flash_attn, config.heads, False)
 
@@ -172,12 +172,18 @@ class DeepSpeedDiffusersAttention(nn.Module):
             self.norm_factor *= math.sqrt(self.config.layer_id + 1)
             # https://github.com/huggingface/transformers/blob/v4.24.0/src/transformers/models/gpt2/modeling_gpt2.py#L191
 
-        self.score_context_func = inference_cuda_module.softmax_context_fp32 if (not config.fp16) else \
-                                    inference_cuda_module.softmax_context_fp16
+        self.score_context_func = (
+            inference_cuda_module.softmax_context_fp16
+            if config.fp16
+            else inference_cuda_module.softmax_context_fp32
+        )
         self.linear_func = inference_cuda_module.linear_layer_fp16 if config.fp16 else \
-                                    inference_cuda_module.linear_layer_fp32
-        self.allocate_workspace = inference_cuda_module.allocate_workspace_fp32 if not (config.fp16) else \
-                                    inference_cuda_module.allocate_workspace_fp16
+                                        inference_cuda_module.linear_layer_fp32
+        self.allocate_workspace = (
+            inference_cuda_module.allocate_workspace_fp16
+            if config.fp16
+            else inference_cuda_module.allocate_workspace_fp32
+        )
 
     def forward(self, input, context=None, input_mask=None):
         if self.config.layer_id == 0:
@@ -185,11 +191,23 @@ class DeepSpeedDiffusersAttention(nn.Module):
                                     input.size()[1],
                                     input.size()[0], DeepSpeedDiffusersAttention.layer_id, self.config.mp_size, False,
                                     0, self.config.max_out_tokens, self.config.min_out_tokens)
-        output = DeepSpeedDiffusersAttentionFunction.apply(input, context, input_mask, self.config, self.attn_qkvw,
-                                                           self.attn_qw, self.attn_kw, self.attn_vw, self.attn_qkvb,
-                                                           self.num_attention_heads_per_partition, self.norm_factor,
-                                                           self.hidden_size_per_partition, self.attn_ow, self.attn_ob,
-                                                           self.do_out_bias, self.score_context_func, self.linear_func,
-                                                           self.triton_flash_attn_kernel)
-
-        return output
+        return DeepSpeedDiffusersAttentionFunction.apply(
+            input,
+            context,
+            input_mask,
+            self.config,
+            self.attn_qkvw,
+            self.attn_qw,
+            self.attn_kw,
+            self.attn_vw,
+            self.attn_qkvb,
+            self.num_attention_heads_per_partition,
+            self.norm_factor,
+            self.hidden_size_per_partition,
+            self.attn_ow,
+            self.attn_ob,
+            self.do_out_bias,
+            self.score_context_func,
+            self.linear_func,
+            self.triton_flash_attn_kernel,
+        )

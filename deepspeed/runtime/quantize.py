@@ -96,8 +96,7 @@ class Quantizer(object):
             scale = (g_max - g_min) / q_range
             zero_point = (g_min / scale).round() * scale
             input_flat = ((input_flat - zero_point) / scale + p).round().clamp(0, (q_range - 1)) * scale + zero_point
-        output = input_flat.reshape(inputs.shape).contiguous()
-        return output
+        return input_flat.reshape(inputs.shape).contiguous()
 
     def quantize_tenary(self, inputs):
         input_flat = inputs.reshape(self.q_groups, -1)
@@ -132,45 +131,45 @@ class Quantizer(object):
         # to go slowly toward the target quantization bits
         # the period and starting bit can be configured
 
-        if input.start_bits != input.target_bits:
-            if self.qsteps >= input.q_period:
-                self.quantize_real_ratio = 1.0
-                input.q_period <<= 1
-                input.q_period *= factor
-                input.start_bits -= 1
-                if self.q_verbose:
-                    logger.info(
-                        f'Quantization settings: current bit-precision = {input.start_bits}, step = {self.qsteps}, quantization period = {input.q_period}, index = {index}'
-                    )
+        if input.start_bits != input.target_bits and self.qsteps >= input.q_period:
+            self.quantize_real_ratio = 1.0
+            input.q_period <<= 1
+            input.q_period *= factor
+            input.start_bits -= 1
+            if self.q_verbose:
+                logger.info(
+                    f'Quantization settings: current bit-precision = {input.start_bits}, step = {self.qsteps}, quantization period = {input.q_period}, index = {index}'
+                )
         assert (input.start_bits >= input.target_bits), \
-            'Quantization bit is lower than target precision bits!'
+                'Quantization bit is lower than target precision bits!'
 
         if self.use_quantizer_kernel:
             if input.start_bits <= 2:
                 raise ValueError('Quantization bit is too low, please do it without quantization kernel!')
-            input_q = ds_quantizer(input.data.clone(),
-                                   self.q_groups,
-                                   input.start_bits,
-                                   asym=False if self.q_type == 'symmetric' else True,
-                                   sr=False if self.q_rounding == 'nearest_neighbor' else True)
-        else:
-            if input.start_bits >= 3:
-                input_flat = self.quantize_highbit(input.data, input.start_bits)
-            elif input.start_bits == 2:
-                assert self.q_type == 'symmetric', 'Quantization type is not symmetric!'
-                assert self.q_rounding == 'nearest', 'Quantization rounding is not nearest_neighbor!'
-                input_flat = self.quantize_tenary(input.data)
-            elif input.start_bits == 1:
-                assert self.q_type == 'symmetric', 'Quantization type is not symmetric!'
-                assert self.q_rounding == 'nearest', 'Quantization rounding is not nearest_neighbor!'
-                input_flat = self.quantize_binary(input.data)
+            else:
+                input_q = ds_quantizer(
+                    input.data.clone(),
+                    self.q_groups,
+                    input.start_bits,
+                    asym=self.q_type != 'symmetric',
+                    sr=self.q_rounding != 'nearest_neighbor',
+                )
+        elif input.start_bits >= 3:
+            input_flat = self.quantize_highbit(input.data, input.start_bits)
+        elif input.start_bits == 2:
+            assert self.q_type == 'symmetric', 'Quantization type is not symmetric!'
+            assert self.q_rounding == 'nearest', 'Quantization rounding is not nearest_neighbor!'
+            input_flat = self.quantize_tenary(input.data)
+        elif input.start_bits == 1:
+            assert self.q_type == 'symmetric', 'Quantization type is not symmetric!'
+            assert self.q_rounding == 'nearest', 'Quantization rounding is not nearest_neighbor!'
+            input_flat = self.quantize_binary(input.data)
         if self.use_quantizer_kernel:
             return self.mixed_fp16_quantize(input.data, input_q, index)
-        else:
-            if self.q_mixed_fp16 and input.start_bits >= input.target_bits - 1:
-                input_flat = self.quantize_real_ratio * input.data + \
+        if self.q_mixed_fp16 and input.start_bits >= input.target_bits - 1:
+            input_flat = self.quantize_real_ratio * input.data + \
                               (1 - self.quantize_real_ratio) * input_flat
-            return input_flat
+        return input_flat
 
     def update_fp16_ratio(self):
         if self.q_mixed_fp16:

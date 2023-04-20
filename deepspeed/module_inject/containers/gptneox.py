@@ -35,19 +35,19 @@ class DS_GPTNEOXContainer(MetaTensorContainer, MegatronContainer, BaseTransforme
     def load_params(self, module, sd, weight_quantizer, mp_replace, prefix):
         param_names = (
             'attention.query_key_value.weight', \
-            'attention.query_key_value.bias', \
-            'attention.dense.weight', \
-            'attention.dense.bias', \
-            'mlp.dense_h_to_4h.weight', \
-            'mlp.dense_h_to_4h.bias', \
-            'mlp.dense_4h_to_h.weight', \
-            'mlp.dense_4h_to_h.bias', \
-            'post_attention_layernorm.weight', \
-            'post_attention_layernorm.bias', \
-            'input_layernorm.weight', \
-            'input_layernorm.bias'
+                'attention.query_key_value.bias', \
+                'attention.dense.weight', \
+                'attention.dense.bias', \
+                'mlp.dense_h_to_4h.weight', \
+                'mlp.dense_h_to_4h.bias', \
+                'mlp.dense_4h_to_h.weight', \
+                'mlp.dense_4h_to_h.bias', \
+                'post_attention_layernorm.weight', \
+                'post_attention_layernorm.bias', \
+                'input_layernorm.weight', \
+                'input_layernorm.bias'
         )
-        for i in range(0, 2):
+        for i in range(2):
             maybe_copy(module.attention,
                        sd,
                        weight_quantizer,
