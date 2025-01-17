@@ -16,6 +16,7 @@
 #when implemented outside of torch.autograd.Function
 
 import math
+import functools
 
 import torch
 from torch import Tensor
@@ -26,8 +27,6 @@ from deepspeed.runtime.utils import noop_decorator
 from deepspeed import comm as dist
 from deepspeed.accelerator import get_accelerator
 
-tensor_map = {}
-
 
 def print_rank_0(message, debug=False, force=False):
     if dist.get_rank() == 0 and (debug or force):
@@ -35,8 +34,14 @@ def print_rank_0(message, debug=False, force=False):
 
 
 try:
-    autocast_custom_fwd = get_accelerator().amp().custom_fwd
-    autocast_custom_bwd = get_accelerator().amp().custom_bwd
+    # Fix `torch.[device].amp.custom_fwd/bwd` FutureWarning in torch 2.4
+    if hasattr(torch, 'amp') and hasattr(torch.amp, 'custom_fwd') and hasattr(torch.amp, 'custom_bwd'):
+        autocast_custom_fwd = functools.partial(torch.amp.custom_fwd, device_type=get_accelerator().device_name())
+        autocast_custom_bwd = functools.partial(torch.amp.custom_bwd, device_type=get_accelerator().device_name())
+    else:
+        # original implementation
+        autocast_custom_fwd = get_accelerator().amp().custom_fwd
+        autocast_custom_bwd = get_accelerator().amp().custom_bwd
 except (ImportError, AttributeError) as exp:
     autocast_custom_fwd = noop_decorator
     autocast_custom_bwd = noop_decorator
@@ -50,14 +55,7 @@ class LinearFunctionForZeroStage3(torch.autograd.Function):
     # bias is an optional argument
     def forward(ctx, input, weight, bias=None):
 
-        weight_id = id(weight)
-        bias_id = id(bias)
-
-        #ctx.save_for_backward(input, weight, bias)
-        ctx.save_for_backward(input, torch.tensor(weight_id), torch.tensor(bias_id))
-
-        tensor_map[weight_id] = weight
-        tensor_map[bias_id] = bias
+        ctx.save_for_backward(input, weight, bias)
 
         if input.dim() == 2 and bias is not None:
             # fused op is marginally faster
@@ -79,11 +77,7 @@ class LinearFunctionForZeroStage3(torch.autograd.Function):
         # None. Thanks to the fact that additional trailing Nones are
         # ignored, the return statement is simple even when the function has
         # optional inputs.
-        #input, weight, bias = ctx.saved_tensors
-
-        input, weight_id, bias_id = ctx.saved_tensors
-        weight = tensor_map[weight_id.item()]
-        bias = tensor_map[bias_id.item()]
+        input, weight, bias = ctx.saved_tensors
 
         grad_input = grad_weight = grad_bias = None
 
@@ -107,7 +101,10 @@ class LinearFunctionForZeroStage3(torch.autograd.Function):
             #print(f"Computed grad weight grad_weight {grad_weight.shape}")
         if bias is not None and ctx.needs_input_grad[2]:
             #print("Computing grad bias")
-            grad_bias = grad_output.sum(0)
+            if dim > 2:
+                grad_bias = grad_output.sum([i for i in range(dim - 1)])
+            else:
+                grad_bias = grad_output.sum(0)
             #print("Done computing grad bias")
             #print("needs bias")
         #print(f"backward shaped grad_input {grad_input.shape}, grad_weight {grad_weight.shape}, grad_bias {grad_bias.shape if grad_bias is not None else None}")

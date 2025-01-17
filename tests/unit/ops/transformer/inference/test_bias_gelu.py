@@ -8,19 +8,13 @@ import torch
 import deepspeed
 from deepspeed.accelerator import get_accelerator
 from deepspeed.ops.op_builder import InferenceBuilder
-from packaging import version as pkg_version
+from deepspeed.ops.transformer import DeepSpeedInferenceConfig
+from deepspeed.ops.transformer.inference.op_binding.bias_gelu import BiasGeluOp
+from deepspeed.utils.torch import required_torch_version
+from .inference_test_utils import allclose, get_dtypes
 
 if not deepspeed.ops.__compatible_ops__[InferenceBuilder.NAME]:
     pytest.skip("Inference ops are not available on this system", allow_module_level=True)
-
-inference_module = None
-torch_minor_version = None
-
-
-def allclose(x, y):
-    assert x.dtype == y.dtype
-    rtol, atol = {torch.float32: (5e-4, 5e-5), torch.float16: (3e-2, 2e-3)}[x.dtype]
-    return torch.allclose(x, y, rtol=rtol, atol=atol)
 
 
 def run_bias_gelu_reference(activations, bias):
@@ -30,22 +24,17 @@ def run_bias_gelu_reference(activations, bias):
 
 
 def run_bias_gelu_ds(activations, bias):
-    global inference_module
-    if inference_module is None:
-        inference_module = InferenceBuilder().load()
-    if activations.dtype == torch.float16:
-        return inference_module.bias_gelu_fp16(activations, bias)
-    else:
-        return inference_module.bias_gelu_fp32(activations, bias)
+    config = DeepSpeedInferenceConfig(dtype=activations.dtype)
+    return BiasGeluOp(config)(activations, bias)
 
 
 @pytest.mark.inference_ops
 @pytest.mark.parametrize("batch", [1, 2])
 @pytest.mark.parametrize("sequence", [1, 128, 255])
 @pytest.mark.parametrize("channels", [512, 1232, 4096])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+@pytest.mark.parametrize("dtype", get_dtypes())
 def test_bias_gelu(batch, sequence, channels, dtype):
-    if pkg_version.parse(torch.__version__) < pkg_version.parse("1.12"):
+    if not required_torch_version(min_version=1.12):
         pytest.skip("gelu implementation matches only after torch 1.12")
 
     activations_ds = torch.randn((batch, sequence, channels), dtype=dtype, device=get_accelerator().device_name())

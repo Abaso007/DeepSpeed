@@ -15,12 +15,10 @@ from unit.megatron_model import get_megatron_version
 from unit.megatron_model import MockGPT2ModelPipe as GPT2ModelPipe
 from deepspeed.utils import RepeatingLoader
 from deepspeed.accelerator import get_accelerator
-from unit.util import required_minimum_torch_version, required_maximum_torch_version
+from deepspeed.utils.torch import required_torch_version
 
-pytestmark = pytest.mark.skipif(not required_minimum_torch_version(major_version=1, minor_version=5),
-                                reason='Megatron-LM package requires Pytorch version 1.5 or above')
-pytestmark = pytest.mark.skipif(not required_maximum_torch_version(major_version=1, minor_version=13),
-                                reason='Megatron-LM package requires Pytorch version 1.13 or below')
+pytestmark = pytest.mark.skipif(not required_torch_version(min_version=1.5, max_version=1.13),
+                                reason='Megatron-LM package requires Pytorch version >=1.5 and <=1.13')
 
 
 def get_deepspeed_model(model):
@@ -69,6 +67,7 @@ class TestConfigurablePP(ConfigurablePP):
     pp_size = 2
     world_size = 4  # mp_size * pp_size
 
+    @pytest.mark.skip(reason="megatron-lm is currently broken so this test cannot be run.")
     def test_pp_basic(self, inputs, tmpdir):
         # basic test case, mp_size=2, pp_size=2, verify ckpt saving/loading.
         args_defaults = {
@@ -226,7 +225,7 @@ class TestConfigurableResizePP(ConfigurablePP):
                 assert torch.is_tensor(test[0][0])
                 test = test[0][0].cpu()
                 load_path = os.path.join(class_tmpdir, f"output-{checkpoint_tag}.pt")
-                baseline = torch.load(load_path)
+                baseline = torch.load(load_path, weights_only=False)
                 assert torch.allclose(
                     baseline, test,
                     atol=1e-03), f"Baseline output {baseline} is not equal to save-then-load output {test}"
@@ -234,30 +233,35 @@ class TestConfigurableResizePP(ConfigurablePP):
     # These tests are divided by baseline model worldsize and test model worldsize
     @pytest.mark.world_size(1)
     @pytest.mark.parametrize("mp_size, pp_size, mp_resize, pp_resize", [(1, 2, 1, 1)])
+    @pytest.mark.skip(reason="megatron-lm is currently broken so this test cannot be run.")
     def test_world_size_2to1(self, inputs, class_tmpdir, checkpoint_tag, baseline_ws2, mp_size, pp_size, mp_resize,
                              pp_resize):
         self._test(inputs, class_tmpdir, checkpoint_tag, mp_size, pp_size, mp_resize, pp_resize)
 
     @pytest.mark.world_size(1)
     @pytest.mark.parametrize("mp_size, pp_size, mp_resize, pp_resize", [(2, 2, 1, 1)])
+    @pytest.mark.skip(reason="megatron-lm is currently broken so this test cannot be run.")
     def test_world_size_4to1(self, inputs, class_tmpdir, checkpoint_tag, baseline_ws4, mp_size, pp_size, mp_resize,
                              pp_resize):
         self._test(inputs, class_tmpdir, checkpoint_tag, mp_size, pp_size, mp_resize, pp_resize)
 
     @pytest.mark.world_size(2)
     @pytest.mark.parametrize("mp_size, pp_size, mp_resize, pp_resize", [(2, 2, 2, 1)])
+    @pytest.mark.skip(reason="megatron-lm is currently broken so this test cannot be run.")
     def test_world_size_4to2(self, inputs, class_tmpdir, checkpoint_tag, baseline_ws4, mp_size, pp_size, mp_resize,
                              pp_resize):
         self._test(inputs, class_tmpdir, checkpoint_tag, mp_size, pp_size, mp_resize, pp_resize)
 
     @pytest.mark.world_size(4)
     @pytest.mark.parametrize("mp_size, pp_size, mp_resize, pp_resize", [(1, 1, 2, 2)])
+    @pytest.mark.skip(reason="megatron-lm is currently broken so this test cannot be run.")
     def test_world_size_1to4(self, inputs, class_tmpdir, checkpoint_tag, baseline_ws1, mp_size, pp_size, mp_resize,
                              pp_resize):
         self._test(inputs, class_tmpdir, checkpoint_tag, mp_size, pp_size, mp_resize, pp_resize)
 
     @pytest.mark.world_size(4)
     @pytest.mark.parametrize("mp_size, pp_size, mp_resize, pp_resize", [(1, 2, 1, 4), (2, 1, 2, 2)])
+    @pytest.mark.skip(reason="megatron-lm is currently broken so this test cannot be run.")
     def test_world_size_2to4(self, inputs, class_tmpdir, checkpoint_tag, baseline_ws2, mp_size, pp_size, mp_resize,
                              pp_resize):
         self._test(inputs, class_tmpdir, checkpoint_tag, mp_size, pp_size, mp_resize, pp_resize)

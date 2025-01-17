@@ -1,4 +1,6 @@
-FROM nvidia/cuda:10.0-devel-ubuntu18.04
+FROM nvidia/cuda:12.2.2-devel-ubuntu20.04
+
+ENV DEBIAN_FRONTEND noninteractive
 
 ##############################################################################
 # Temporary Installation Directory
@@ -17,7 +19,7 @@ RUN apt-get update && \
         curl wget vim tmux emacs less unzip \
         htop iftop iotop ca-certificates openssh-client openssh-server \
         rsync iputils-ping net-tools sudo \
-        llvm-9-dev
+        llvm-dev
 
 ##############################################################################
 # Installation Latest Git
@@ -38,20 +40,20 @@ RUN cp /etc/ssh/sshd_config ${STAGE_DIR}/sshd_config && \
 ##############################################################################
 # Mellanox OFED
 ##############################################################################
-ENV MLNX_OFED_VERSION=4.6-1.0.1.1
+ENV MLNX_OFED_VERSION=4.9-7.1.0.0
 RUN apt-get install -y libnuma-dev
 RUN cd ${STAGE_DIR} && \
-        wget -q -O - http://www.mellanox.com/downloads/ofed/MLNX_OFED-${MLNX_OFED_VERSION}/MLNX_OFED_LINUX-${MLNX_OFED_VERSION}-ubuntu18.04-x86_64.tgz | tar xzf - && \
-        cd MLNX_OFED_LINUX-${MLNX_OFED_VERSION}-ubuntu18.04-x86_64 && \
+        wget -q -O - http://www.mellanox.com/downloads/ofed/MLNX_OFED-${MLNX_OFED_VERSION}/MLNX_OFED_LINUX-${MLNX_OFED_VERSION}-ubuntu20.04-x86_64.tgz | tar xzf - && \
+        cd MLNX_OFED_LINUX-${MLNX_OFED_VERSION}-ubuntu20.04-x86_64 && \
         ./mlnxofedinstall --user-space-only --without-fw-update --all -q && \
         cd ${STAGE_DIR} && \
-        rm -rf ${STAGE_DIR}/MLNX_OFED_LINUX-${MLNX_OFED_VERSION}-ubuntu18.04-x86_64*
+        rm -rf ${STAGE_DIR}/MLNX_OFED_LINUX-${MLNX_OFED_VERSION}-ubuntu20.04-x86_64*
 
 ##############################################################################
 # nv_peer_mem
 ##############################################################################
-ENV NV_PEER_MEM_VERSION=1.1
-ENV NV_PEER_MEM_TAG=1.1-0
+ENV NV_PEER_MEM_VERSION=1.2
+ENV NV_PEER_MEM_TAG=${NV_PEER_MEM_VERSION}-0
 RUN mkdir -p ${STAGE_DIR} && \
         git clone https://github.com/Mellanox/nv_peer_memory.git --branch ${NV_PEER_MEM_TAG} ${STAGE_DIR}/nv_peer_memory && \
         cd ${STAGE_DIR}/nv_peer_memory && \
@@ -67,8 +69,8 @@ RUN mkdir -p ${STAGE_DIR} && \
 ##############################################################################
 # OPENMPI
 ##############################################################################
-ENV OPENMPI_BASEVERSION=4.0
-ENV OPENMPI_VERSION=${OPENMPI_BASEVERSION}.1
+ENV OPENMPI_BASEVERSION=4.1
+ENV OPENMPI_VERSION=${OPENMPI_BASEVERSION}.6
 RUN cd ${STAGE_DIR} && \
         wget -q -O - https://download.open-mpi.org/release/open-mpi/v${OPENMPI_BASEVERSION}/openmpi-${OPENMPI_VERSION}.tar.gz | tar xzf - && \
         cd openmpi-${OPENMPI_VERSION} && \
@@ -95,7 +97,7 @@ ENV PYTHON_VERSION=3
 RUN apt-get install -y python3 python3-dev && \
         rm -f /usr/bin/python && \
         ln -s /usr/bin/python3 /usr/bin/python && \
-        curl -O https://bootstrap.pypa.io/get-pip.py && \
+        curl -O https://bootstrap.pypa.io/pip/3.6/get-pip.py && \
         python get-pip.py && \
         rm get-pip.py && \
         pip install --upgrade pip && \
@@ -103,12 +105,6 @@ RUN apt-get install -y python3 python3-dev && \
         python -V && pip -V
 RUN pip install pyyaml
 RUN pip install ipython
-
-##############################################################################
-# TensorFlow
-##############################################################################
-ENV TENSORFLOW_VERSION=1.15.2
-RUN pip install tensorflow-gpu==${TENSORFLOW_VERSION}
 
 ##############################################################################
 # Some Packages
@@ -136,33 +132,26 @@ RUN pip install psutil \
         sentencepiece \
         msgpack \
         requests \
-        pandas \
         sphinx \
         sphinx_rtd_theme \
         scipy \
         numpy \
-        sklearn \
         scikit-learn \
         nvidia-ml-py3 \
-        mpi4py \
-        cupy-cuda100
+        mpi4py
 
 ##############################################################################
 ## SSH daemon port inside container cannot conflict with host OS port
 ###############################################################################
 ENV SSH_PORT=2222
 RUN cat /etc/ssh/sshd_config > ${STAGE_DIR}/sshd_config && \
-        sed "0,/^#Port 22/s//Port ${SSH_PORT}/" ${STAGE_DIR}/sshd_config > /etc/ssh/sshd_config
+        sed "0,/^Port 22/s//Port ${SSH_PORT}/" ${STAGE_DIR}/sshd_config > /etc/ssh/sshd_config
 
 ##############################################################################
 # PyTorch
 ##############################################################################
-ENV PYTORCH_VERSION=1.2.0
-ENV TORCHVISION_VERSION=0.4.0
-ENV TENSORBOARDX_VERSION=1.8
+ENV PYTORCH_VERSION=1.13.0
 RUN pip install torch==${PYTORCH_VERSION}
-RUN pip install torchvision==${TORCHVISION_VERSION}
-RUN pip install tensorboardX==${TENSORBOARDX_VERSION}
 
 ##############################################################################
 # PyYAML build issue
